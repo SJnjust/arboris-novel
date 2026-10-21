@@ -12,7 +12,6 @@ Writer API Router - 人类化起点长篇写作系统
 2. 跨章 1234 逻辑：通过 ChapterMission 控制每章只写一个节拍
 3. 后置护栏检查：自动检测并修复违规内容
 """
-import asyncio
 import json
 import logging
 import os
@@ -30,13 +29,9 @@ from ...models.novel import Chapter, ChapterOutline, ChapterVersion
 from ...schemas.novel import (
     Chapter as ChapterSchema,
     ChapterGenerationStatus,
-    AdvancedGenerateRequest,
-    AdvancedGenerateResponse,
     DeleteChapterRequest,
     EditChapterRequest,
     EvaluateChapterRequest,
-    FinalizeChapterRequest,
-    FinalizeChapterResponse,
     GenerateChapterRequest,
     GenerateOutlineRequest,
     NovelProject as NovelProjectSchema,
@@ -53,10 +48,8 @@ from ...services.vector_store_service import VectorStoreService
 from ...services.writer_context_builder import WriterContextBuilder
 from ...services.chapter_guardrails import ChapterGuardrails
 from ...services.ai_review_service import AIReviewService
-from ...services.finalize_service import FinalizeService
 from ...utils.json_utils import remove_think_tags, unwrap_markdown_json
 from ...repositories.system_config_repository import SystemConfigRepository
-from ...services.pipeline_orchestrator import PipelineOrchestrator
 
 router = APIRouter(prefix="/api/writer", tags=["Writer"])
 logger = logging.getLogger(__name__)
@@ -271,177 +264,6 @@ async def _refresh_edit_summary_and_ingest(
     except Exception as exc:
         logger.warning("自动修复失败，返回原文: %s", exc)
         return original_text
-
-
-async def _finalize_chapter_async(
-    project_id: str,
-    chapter_number: int,
-    selected_version_id: int,
-    user_id: int,
-    skip_vector_update: bool = False,
-) -> None:
-    async with AsyncSessionLocal() as session:
-        llm_service = LLMService(session)
-
-        stmt = (
-            select(Chapter)
-            .options(selectinload(Chapter.versions))
-            .where(
-                Chapter.project_id == project_id,
-                Chapter.chapter_number == chapter_number,
-            )
-        )
-        result = await session.execute(stmt)
-        chapter = result.scalars().first()
-        if not chapter:
-            return
-
-        selected_version = next(
-            (v for v in chapter.versions if v.id == selected_version_id),
-            None,
-        )
-        if not selected_version or not selected_version.content:
-            return
-
-        chapter.selected_version_id = selected_version.id
-        chapter.status = ChapterGenerationStatus.SUCCESSFUL.value
-        chapter.word_count = len(selected_version.content or "")
-        await session.commit()
-
-        vector_store = None
-        if settings.vector_store_enabled:
-            try:
-                vector_store = VectorStoreService()
-            except RuntimeError as exc:
-                logger.warning("向量库初始化失败，跳过定稿写入: %s", exc)
-
-        sync_session = getattr(session, "sync_session", session)
-        finalize_service = FinalizeService(sync_session, llm_service, vector_store)
-        await finalize_service.finalize_chapter(
-            project_id=project_id,
-            chapter_number=chapter_number,
-            chapter_text=selected_version.content,
-            user_id=user_id,
-            skip_vector_update=skip_vector_update,
-        )
-
-
-def _schedule_finalize_task(
-    project_id: str,
-    chapter_number: int,
-    selected_version_id: int,
-    user_id: int,
-    skip_vector_update: bool = False,
-) -> None:
-    asyncio.create_task(
-        _finalize_chapter_async(
-            project_id=project_id,
-            chapter_number=chapter_number,
-            selected_version_id=selected_version_id,
-            user_id=user_id,
-            skip_vector_update=skip_vector_update,
-        )
-    )
-
-
-@router.post("/advanced/generate", response_model=AdvancedGenerateResponse)
-async def advanced_generate_chapter(
-    request: AdvancedGenerateRequest,
-    background_tasks: BackgroundTasks,
-    session: AsyncSession = Depends(get_session),
-    current_user: UserInDB = Depends(get_current_user),
-) -> AdvancedGenerateResponse:
-    """
-    高级写作入口：通过 PipelineOrchestrator 统一编排生成流程。
-    """
-    orchestrator = PipelineOrchestrator(session)
-    result = await orchestrator.generate_chapter(
-        project_id=request.project_id,
-        chapter_number=request.chapter_number,
-        writing_notes=request.writing_notes,
-        user_id=current_user.id,
-        flow_config=request.flow_config.model_dump(),
-    )
-
-    flow_config = request.flow_config
-    if flow_config.async_finalize and result.get("variants"):
-        best_index = result.get("best_version_index", 0)
-        variants = result["variants"]
-        if 0 <= best_index < len(variants):
-            selected_version_id = variants[best_index]["version_id"]
-            background_tasks.add_task(
-                _schedule_finalize_task,
-                request.project_id,
-                request.chapter_number,
-                selected_version_id,
-                current_user.id,
-                False,
-            )
-
-    return AdvancedGenerateResponse(**result)
-
-
-@router.post("/chapters/{chapter_number}/finalize", response_model=FinalizeChapterResponse)
-async def finalize_chapter(
-    chapter_number: int,
-    request: FinalizeChapterRequest,
-    session: AsyncSession = Depends(get_session),
-    current_user: UserInDB = Depends(get_current_user),
-) -> FinalizeChapterResponse:
-    """
-    定稿入口：选中版本后触发 FinalizeService 进行记忆更新与快照写入。
-    """
-    novel_service = NovelService(session)
-    await novel_service.ensure_project_owner(request.project_id, current_user.id)
-
-    stmt = (
-        select(Chapter)
-        .options(selectinload(Chapter.versions))
-        .where(
-            Chapter.project_id == request.project_id,
-            Chapter.chapter_number == chapter_number,
-        )
-    )
-    result = await session.execute(stmt)
-    chapter = result.scalars().first()
-    if not chapter:
-        raise HTTPException(status_code=404, detail="章节不存在")
-
-    selected_version = next(
-        (v for v in chapter.versions if v.id == request.selected_version_id),
-        None,
-    )
-    if not selected_version or not selected_version.content:
-        raise HTTPException(status_code=400, detail="选中的版本不存在或内容为空")
-
-    chapter.selected_version_id = selected_version.id
-    chapter.status = ChapterGenerationStatus.SUCCESSFUL.value
-    chapter.word_count = len(selected_version.content or "")
-    await session.commit()
-
-    vector_store = None
-    if settings.vector_store_enabled and not request.skip_vector_update:
-        try:
-            vector_store = VectorStoreService()
-        except RuntimeError as exc:
-            logger.warning("向量库初始化失败，跳过定稿写入: %s", exc)
-
-    sync_session = getattr(session, "sync_session", session)
-    finalize_service = FinalizeService(sync_session, LLMService(session), vector_store)
-    finalize_result = await finalize_service.finalize_chapter(
-        project_id=request.project_id,
-        chapter_number=chapter_number,
-        chapter_text=selected_version.content,
-        user_id=current_user.id,
-        skip_vector_update=request.skip_vector_update or False,
-    )
-
-    return FinalizeChapterResponse(
-        project_id=request.project_id,
-        chapter_number=chapter_number,
-        selected_version_id=selected_version.id,
-        result=finalize_result,
-    )
 
 
 @router.post("/novels/{project_id}/chapters/generate", response_model=NovelProjectSchema)

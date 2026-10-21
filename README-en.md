@@ -1,6 +1,6 @@
 # Arboris-Novel | Writing Assistant for Creators
 
-[中文](11.md) | English
+[中文](README.md) | English
 
 ![GitHub stars](https://img.shields.io/github/stars/t59688/arboris-novel?style=social)
 ![GitHub forks](https://img.shields.io/github/forks/t59688/arboris-novel?style=social)

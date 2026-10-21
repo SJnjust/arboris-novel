@@ -69,7 +69,7 @@
 
 ```bash
 # 1. 复制配置文件
-cp .env.example .env
+cp backend/env.example .env
 
 # 2. 编辑 .env 中的必填项：
 #    - SECRET_KEY: 随机字符串，用于 JWT 等
@@ -198,18 +198,22 @@ A: 可以尝试：
 
 ### 环境准备
 
-- Python 3.10+（建议使用虚拟环境）
-- Node.js 18+ 与 npm
-- pip / virtualenv（或你习惯的依赖管理工具）
+- Python 3.11（与 `deploy/Dockerfile` 一致），后端虚拟环境使用 `backend/.venv`
+- Node.js 22.12+ 与 npm（本轮使用 Node 22.23.3；请先激活本机的 Node 22）
+- pip / venv；macOS 缺少 Python 3.11 时可执行 `brew install python@3.11`
 - 可选：Docker 与 Docker Compose（用于一键部署与发布）
 
 ### 后端本地开发
 
 ```bash
 cd backend
-python3 -m venv .venv
+python3.11 -m venv .venv
 source .venv/bin/activate  # Windows 使用 .venv\Scripts\activate
 pip install -r requirements.txt
+pip install -r requirements-dev.txt
+cp env.example .env
+# 编辑本地 .env，填写自己的值，不提交；本地开发显式选择 SQLite：
+# SECRET_KEY=<本地随机值> DB_PROVIDER=sqlite SQLITE_DB_PATH=/绝对路径/local.db
 uvicorn app.main:app --reload
 ```
 
@@ -219,11 +223,35 @@ uvicorn app.main:app --reload
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
 开发服务器默认运行在 `http://127.0.0.1:5173`，可通过 `--host` 参数暴露给局域网设备。
+
+### 测试与静态检查
+
+从根目录执行：
+
+```bash
+make test                # backend/.venv 的 pytest，仅运行 backend/tests
+make check               # 后端测试 + 前端 type-check + build-only；任一步失败返回非零
+make -k check            # 即使 type-check 失败，也继续执行独立的构建并报告结果
+```
+
+对应的独立命令：
+
+```bash
+cd backend
+.venv/bin/python -m pytest -q
+cd ../frontend
+npm run type-check
+npm run build-only
+```
+
+后端测试使用每个用例独立的临时 SQLite、真实鉴权/路由/服务和数据库提交；LLM 客户端使用脚本化流式 mock，模型配置与外部向量入库打桩，禁止发出网络连接。测试不读取 `.env`，不会访问真实模型、邮件、Redis 或用户数据库。覆盖登录、项目归属、灵感对话、蓝图生成/替换、续写大纲、多版本生成、选择与失败状态、非法 JSON 和长度截断错误。
+
+前端类型检查与 Vite 构建应分别执行：构建成功不代表类型检查通过。类型问题的阶段 0 基线分类与计数见本次开发报告；后续修改应继续使用这些命令检查，不通过修改业务行为来掩盖诊断。
 
 ### 打包与构建
 
@@ -238,6 +266,8 @@ npm run dev
 ```bash
 docker compose -f deploy/docker-compose.yml up -d --build
 ```
+
+完整部署、数据库兼容、提示词和回滚说明已合并到 [部署指南](docs/DEPLOYMENT_GUIDE.md)。历史分析与集成方案保留在 [文档归档](docs/archive/README.md)。
 
 如需推送镜像，可在 `deploy` 目录执行 `docker build -t <registry>/arboris:<tag> .`，测试后再 `docker push` 发布。
 

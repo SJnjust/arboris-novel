@@ -6,3 +6,5 @@ AILIST NAME=storage|K=dir|P=本地存储目录_SQLite数据库文件|E=-|A=-
 AILIST NAME=requirements.txt|K=file|P=Python依赖清单_pip安装配置|E=-|A=-
 AILIST NAME=env.example|K=file|P=环境变量示例_配置模板|E=-|A=-
 AILIST NAME=.env|K=file|P=环境变量配置_敏感信息存储|E=-|A=-
+AILIST NAME=tests|K=dir|P=临时SQLite和mock_LLM回归测试|E=pytest|A=鉴权_灵感_蓝图_写作状态
+AILIST NAME=requirements-dev.txt|K=file|P=测试开发依赖|E=pip_install|A=pytest_pytest-asyncio
