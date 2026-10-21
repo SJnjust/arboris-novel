@@ -1,8 +1,9 @@
 # AIMETA P=路由聚合_注册所有子路由到主路由|R=路由注册|NR=不含具体端点实现|E=api_router|X=http|A=APIRouter聚合|D=fastapi|S=none|RD=./README.ai
 from fastapi import APIRouter
-from . import admin, auth, llm_config, novels, optimizer, updates, writer, analytics, foreshadowing, projects, review
+from . import admin, auth, jobs, llm_config, novels, optimizer, updates, writer, analytics, foreshadowing, projects, review
 
 api_router = APIRouter()
+api_router.include_router(jobs.router)
 api_router.include_router(auth.router)
 api_router.include_router(novels.router)
 api_router.include_router(writer.router)

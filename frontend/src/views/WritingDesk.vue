@@ -11,6 +11,10 @@
       @toggle-sidebar="toggleSidebar"
     />
 
+    <div v-if="chapterJobs.error.value" class="px-6 py-2" role="alert">
+      {{ chapterJobs.error.value }}
+      <button class="md-btn md-btn-tonal" @click="chapterJobs.recover()">重新获取任务状态</button>
+    </div>
     <!-- 主要内容区域 -->
     <div class="flex-1 w-full px-4 sm:px-6 lg:px-8 py-6 overflow-hidden">
       <!-- 加载状态 -->
@@ -63,6 +67,9 @@
           :selected-version-index="selectedVersionIndex"
           :available-versions="availableVersions"
           :is-selecting-version="isSelectingVersion"
+          :generation-job="selectedGenerationJob"
+          :cancelling-generation="chapterJobs.cancelling.value"
+          @cancel-generation="cancelGeneration"
           @regenerate-chapter="regenerateChapter"
           @evaluate-chapter="evaluateChapter"
           @hide-version-selector="hideVersionSelector"
@@ -71,7 +78,6 @@
           @confirm-version-selection="confirmVersionSelection"
           @generate-chapter="generateChapter"
           @show-evaluation-detail="showEvaluationDetailModal = true"
-          @fetch-chapter-status="fetchChapterStatus"
           @edit-chapter="editChapterContent"
           />
         </div>
@@ -105,10 +111,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNovelStore } from '@/stores/novel'
-import type { Chapter, ChapterOutline, ChapterGenerationResponse, ChapterVersion } from '@/api/novel'
+import { ApiError, NovelAPI } from '@/api/novel'
+import { useJob } from '@/composables/useJob'
+import type { AIJob, Chapter, ChapterOutline, ChapterGenerationResponse, ChapterVersion } from '@/api/novel'
 import { globalAlert } from '@/composables/useAlert'
 import Tooltip from '@/components/Tooltip.vue'
 import WDHeader from '@/components/writing-desk/WDHeader.vue'
@@ -131,7 +139,7 @@ const novelStore = useNovelStore()
 const selectedChapterNumber = ref<number | null>(null)
 const chapterGenerationResult = ref<ChapterGenerationResponse | null>(null)
 const selectedVersionIndex = ref<number>(0)
-const generatingChapter = ref<number | null>(null)
+const submittingChapter = ref<number | null>(null)
 const sidebarOpen = ref(false)
 const showVersionDetailModal = ref(false)
 const detailVersionIndex = ref<number>(0)
@@ -143,6 +151,22 @@ const showGenerateOutlineModal = ref(false)
 
 // 计算属性
 const project = computed(() => novelStore.currentProject)
+
+const chapterJobs = useJob(() => project.value?.id === props.id ? props.id : undefined, {
+  onRecovered(jobs) {
+    if (selectedChapterNumber.value === null && jobs[0]?.payload.chapter_number) {
+      selectedChapterNumber.value = jobs[0].payload.chapter_number
+    }
+  },
+  async onTerminal(job: AIJob, signal: AbortSignal) {
+    const updated = await NovelAPI.getNovel(job.project_id, { signal })
+    if (signal.aborted || props.id !== job.project_id || novelStore.currentProject?.id !== job.project_id) return
+    novelStore.currentProject = updated
+  }
+})
+const generatingChapter = computed(() => submittingChapter.value ?? chapterJobs.activeJobs.value[0]?.payload.chapter_number ?? null)
+const selectedGenerationJob = computed(() => chapterJobs.jobs.value.find(job => job.payload.chapter_number === selectedChapterNumber.value) || null)
+
 
 const selectedChapter = computed(() => {
   if (!project.value || selectedChapterNumber.value === null) return null
@@ -356,19 +380,11 @@ const loadProject = async () => {
   }
 }
 
-const fetchChapterStatus = async () => {
-  if (selectedChapterNumber.value === null) {
-    return
-  }
-  try {
-    await novelStore.loadChapter(selectedChapterNumber.value)
-    console.log('Chapter status polled and updated.')
-  } catch (error) {
-    console.error('轮询章节状态失败:', error)
-    // 在这里可以决定是否要通知用户轮询失败
-  }
+const cancelGeneration = async () => {
+  if (!selectedGenerationJob.value) return
+  try { await chapterJobs.cancel(selectedGenerationJob.value.id) }
+  catch (error) { globalAlert.showError(error instanceof Error ? error.message : '取消失败，请重试', '取消生成') }
 }
-
 
 // 显示版本详情
 const showVersionDetail = (versionIndex: number) => {
@@ -402,8 +418,12 @@ const generateChapter = async (chapterNumber: number) => {
     return
   }
 
+  const previousProject = project.value
+  const previousChapter = previousProject?.chapters.find(chapter => chapter.chapter_number === chapterNumber)
+  const previousStatus = previousChapter?.generation_status
+  let temporaryChapter: Chapter | undefined
   try {
-    generatingChapter.value = chapterNumber
+    submittingChapter.value = chapterNumber
     selectedChapterNumber.value = chapterNumber
 
     // 在本地更新章节状态为generating
@@ -423,10 +443,11 @@ const generateChapter = async (chapterNumber: number) => {
           evaluation: null,
           generation_status: 'generating'
         } as Chapter)
+        temporaryChapter = project.value.chapters.find(ch => ch.chapter_number === chapterNumber)
       }
     }
 
-    await novelStore.generateChapter(chapterNumber)
+    await chapterJobs.submit(String(chapterNumber), (key, signal) => novelStore.generateChapter(chapterNumber, key, { signal }))
     
     // store 中的 project 已经被更新，所以我们不需要手动修改本地状态
     // chapterGenerationResult 也不再需要，因为 availableVersions 会从更新后的 project.chapters 中获取数据
@@ -435,6 +456,17 @@ const generateChapter = async (chapterNumber: number) => {
     selectedVersionIndex.value = 0
   } catch (error) {
     console.error('生成章节失败:', error)
+
+    if (error instanceof ApiError && error.status === 429) {
+      if (project.value === previousProject) {
+        if (previousChapter && previousStatus) previousChapter.generation_status = previousStatus
+        else if (temporaryChapter && project.value) {
+          project.value.chapters = project.value.chapters.filter(chapter => chapter !== temporaryChapter)
+        }
+      }
+      globalAlert.showError('当前任务过多，请稍后再试', '生成受限')
+      return
+    }
 
     // 错误状态的本地更新仍然是必要的，以立即反映UI
     if (project.value?.chapters) {
@@ -446,7 +478,7 @@ const generateChapter = async (chapterNumber: number) => {
 
     globalAlert.showError(`生成章节失败: ${error instanceof Error ? error.message : '未知错误'}`, '生成失败')
   } finally {
-    generatingChapter.value = null
+    submittingChapter.value = null
   }
 }
 
@@ -604,6 +636,8 @@ const handleGenerateOutline = async (numChapters: number) => {
     isGeneratingOutline.value = false
   }
 }
+
+watch(() => props.id, () => { selectedChapterNumber.value = null; void loadProject() })
 
 onMounted(() => {
   document.body.classList.add('m3-novel')

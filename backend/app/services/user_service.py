@@ -55,10 +55,6 @@ class UserService:
         users = await self.repo.list_all()
         return [UserInDB.model_validate(item) for item in users]
 
-    async def increment_daily_request(self, user_id: int) -> None:
-        await self.repo.increment_daily_request(user_id)
-        await self.session.commit()
-
     async def get_daily_request(self, user_id: int) -> int:
         return await self.repo.get_daily_request(user_id)
 

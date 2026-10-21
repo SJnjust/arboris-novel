@@ -11,7 +11,7 @@ async def test_outline_continuation_preserves_existing_chapters(client, auth, re
     response = await client.post(f"/api/writer/novels/{project}/chapters/outline", headers=auth, json={"start_chapter": 2, "num_chapters": 2})
     assert response.status_code == 200
     assert response.json()["id"] == project
-    # Read independently: the write response currently uses a preloaded relationship snapshot.
+    assert [row["chapter_number"] for row in response.json()["blueprint"]["chapter_outline"]] == [1, 2, 3]
     fresh = (await client.get(f"/api/novels/{project}", headers=auth)).json()
     assert [row["chapter_number"] for row in fresh["blueprint"]["chapter_outline"]] == [1, 2, 3]
     prompt = llm.calls[0][1]["messages"][-1].content
@@ -22,7 +22,7 @@ async def test_outline_continuation_preserves_existing_chapters(client, auth, re
 
 
 @pytest.mark.parametrize("count", [1, 2])
-async def test_generation_versions_and_selection_state(client, auth, ready_project, llm, database, count):
+async def test_generation_versions_and_selection_state(client, auth, ready_project, llm, database, count, wait_job):
     project = ready_project
     base = f"/api/writer/novels/{project}/chapters"
     before = (await client.get(f"/api/novels/{project}/chapters/1", headers=auth)).json()
@@ -44,7 +44,12 @@ async def test_generation_versions_and_selection_state(client, auth, ready_proje
     if count > 1:
         llm.reply("editor_review", {"best_version_index": 1, "scores": {"pacing": 9}, "overall_evaluation": "第二版更紧凑"})
     response = await client.post(f"{base}/generate", headers=auth, json={"chapter_number": 1, "writing_notes": "调查旧馆"})
-    assert response.status_code == 200
+    assert response.status_code == 202
+    assert list(response.json()) == ["job_id"]
+    job = await wait_job(response.json()["job_id"])
+    assert job["status"] == "succeeded", job["error"]
+    assert job["progress"] == 100
+    assert job["result"]["version_count"] == count
     detail = (await client.get(f"/api/novels/{project}/chapters/1", headers=auth)).json()
     assert detail["generation_status"] == "waiting_for_confirm"
     assert detail["versions"] == contents
@@ -69,12 +74,19 @@ async def test_generation_versions_and_selection_state(client, auth, ready_proje
         assert chapter.word_count == len(contents[-1])
 
 
-async def test_truncated_generation_marks_chapter_failed(client, auth, ready_project, llm, database):
+async def test_truncated_generation_marks_chapter_failed(client, auth, ready_project, llm, database, wait_job):
+    async with database() as session:
+        session.add(SystemConfig(key="writer.chapter_versions", value="1"))
+        await session.commit()
     llm.reply("chapter_plan", {"allowed_new_characters": []})
-    llm.reply("writing_v2", "不应被保存的半章内容", finish_reason="length")
+    for _ in range(3):
+        llm.reply("writing_v2", "不应被保存的半章内容", finish_reason="length")
     response = await client.post(f"/api/writer/novels/{ready_project}/chapters/generate", headers=auth, json={"chapter_number": 1})
-    assert response.status_code == 500
-    assert "长度限制被截断" in response.json()["detail"]
+    assert response.status_code == 202
+    job = await wait_job(response.json()["job_id"])
+    assert job["status"] == "failed"
+    assert job["error"]["status_code"] == 500
+    assert "长度限制被截断" in job["error"]["detail"]["failed_versions"][0]["detail"]
     async with database() as session:
         chapter = (await session.scalars(select(Chapter))).one()
         assert chapter.status == "failed"

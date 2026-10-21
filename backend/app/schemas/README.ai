@@ -6,3 +6,4 @@ AILIST NAME=llm_config.py|K=file|P=LLM配置模式_模型配置请求响应|E=LL
 AILIST NAME=novel.py|K=file|P=小说模式_小说和章节请求响应|E=NovelSchema_ChapterSchema|A=小说结构_章节结构
 AILIST NAME=prompt.py|K=file|P=提示词模式_提示模板请求响应|E=PromptSchema|A=提示词结构
 AILIST NAME=user.py|K=file|P=用户模式_用户和认证请求响应|E=UserSchema_TokenSchema|A=用户结构_令牌结构
+AILIST NAME=job.py|K=file|P=任务提交和查询响应|E=JobSubmitted_JobRead|A=任务DTO

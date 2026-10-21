@@ -15,6 +15,7 @@ class NovelRepository(BaseRepository[NovelProject]):
         stmt = (
             select(NovelProject)
             .where(NovelProject.id == project_id)
+            .execution_options(populate_existing=True)
             .options(
                 selectinload(NovelProject.blueprint),
                 selectinload(NovelProject.characters),

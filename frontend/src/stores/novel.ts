@@ -1,7 +1,7 @@
 // AIMETA P=小说状态_当前小说数据管理|R=currentNovel_chapters_fetch|NR=不含API调用|E=store:novel|X=internal|A=useNovelStore|D=pinia|S=none|RD=./README.ai
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { NovelProject, NovelProjectSummary, ConverseResponse, BlueprintGenerationResponse, Blueprint, DeleteNovelsResponse, ChapterOutline } from '@/api/novel'
+import type { NovelProject, NovelProjectSummary, ConverseResponse, BlueprintGenerationResponse, Blueprint, DeleteNovelsResponse, ChapterOutline, JobSubmitted, RequestOptions } from '@/api/novel'
 import { NovelAPI } from '@/api/novel'
 
 export const useNovelStore = defineStore('novel', () => {
@@ -145,20 +145,11 @@ export const useNovelStore = defineStore('novel', () => {
     }
   }
 
-  async function generateChapter(chapterNumber: number): Promise<NovelProject> {
-    // 注意：这里不设置全局 isLoading，因为 WritingDesk.vue 有自己的局部加载状态
+  async function generateChapter(chapterNumber: number, key: string, options: RequestOptions = {}): Promise<JobSubmitted> {
     error.value = null
-    try {
-      if (!currentProject.value) {
-        throw new Error('没有当前项目')
-      }
-      const updatedProject = await NovelAPI.generateChapter(currentProject.value.id, chapterNumber)
-      currentProject.value = updatedProject // 更新 store 中的当前项目
-      return updatedProject
-    } catch (err) {
-      error.value = err instanceof Error ? err.message : '生成章节失败'
-      throw err
-    }
+    if (!currentProject.value) throw new Error('没有当前项目')
+    // 提交只返回任务 ID；任务失败保留工作区，由任务面板显示原因。
+    return NovelAPI.generateChapter(currentProject.value.id, chapterNumber, key, options)
   }
 
   async function evaluateChapter(chapterNumber: number): Promise<NovelProject> {

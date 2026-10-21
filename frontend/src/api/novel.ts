@@ -8,12 +8,55 @@ export const API_BASE_URL = import.meta.env.MODE === 'production' ? '' : 'http:/
 export const API_PREFIX = '/api'
 
 // 统一的请求处理函数
-const request = async (url: string, options: RequestInit = {}) => {
+export type RequestOptions = RequestInit & { timeoutMs?: number | null }
+
+export function redactSensitiveText(text: string): string {
+  return text.replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[已隐藏]@')
+    .replace(/\bBearer\s+(?!\[已隐藏\])[^\s"'<>;,，；}]+/gi, 'Bearer [已隐藏]')
+    .replace(/\bsk-[A-Za-z0-9_-]+/g, '[已隐藏]')
+    .replace(/(["']?(?:api[_-]?key|access[_-]?token|secret[_-]?key|authorization|password|passwd|token)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;，；}]+)/gi, '$1[已隐藏]')
+}
+
+export function formatApiDetail(detail: unknown): string {
+  if (typeof detail === 'string') return redactSensitiveText(detail)
+  if (Array.isArray(detail)) {
+    return detail.map(item => {
+      if (item && typeof item === 'object' && 'msg' in item) {
+        const location = Array.isArray(item.loc) ? item.loc.filter((part: unknown) => !['body', 'query', 'path'].includes(String(part))).join('.') : ''
+        return redactSensitiveText(`${location ? `${location}：` : ''}${String(item.msg)}`)
+      }
+      return formatApiDetail(item)
+    }).join('；')
+  }
+  if (detail && typeof detail === 'object' && 'message' in detail) {
+    const versions = 'failed_versions' in detail && Array.isArray(detail.failed_versions)
+      ? detail.failed_versions.map(item => `版本 ${Number(item.index) + 1}：${formatApiDetail(item.detail)}`) : []
+    return redactSensitiveText([String(detail.message), ...versions].join('；'))
+  }
+  return '请求失败，请稍后重试'
+}
+
+export class ApiError extends Error {
+  constructor(message: string, public status: number, public detail: unknown) {
+    super(message)
+  }
+
+  get jobId(): string | undefined {
+    return this.detail && typeof this.detail === 'object' && 'job_id' in this.detail ? String(this.detail.job_id) : undefined
+  }
+}
+
+export const request = async (url: string, options: RequestOptions = {}) => {
+  const { timeoutMs = 30000, signal, ...init } = options
+  const controller = new AbortController()
+  const abort = () => controller.abort(signal?.reason)
+  if (signal?.aborted) abort()
+  else signal?.addEventListener('abort', abort, { once: true })
+  let timedOut = false
+  const timer = timeoutMs === null ? undefined : setTimeout(() => { timedOut = true; controller.abort() }, timeoutMs)
   const authStore = useAuthStore()
-  const headers = new Headers({
-    'Content-Type': 'application/json',
-    ...options.headers
-  })
+  const headers = new Headers(options.headers)
+  if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
 
   // 如果 body 是 FormData，删除 Content-Type header，让浏览器自动设置（包含 boundary）
   if (options.body instanceof FormData) {
@@ -24,21 +67,47 @@ const request = async (url: string, options: RequestInit = {}) => {
     headers.set('Authorization', `Bearer ${authStore.token}`)
   }
 
-  const response = await fetch(url, { ...options, headers })
+  try {
+    const response = await fetch(url, { ...init, headers, signal: controller.signal })
 
-  if (response.status === 401) {
-    // Token 失效或未授权
-    authStore.logout()
-    router.push('/login')
-    throw new Error('会话已过期，请重新登录')
+    if (response.status === 401) {
+      // Token 失效或未授权
+      authStore.logout()
+      router.push('/login')
+      throw new Error('会话已过期，请重新登录')
+    }
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      throw new ApiError(errorData.detail ? formatApiDetail(errorData.detail) : `请求失败，状态码: ${response.status}`, response.status, errorData.detail)
+    }
+
+    return await response.json()
+  } catch (error) {
+    if (timedOut) throw new Error('请求超时，请重试')
+    throw error
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+    signal?.removeEventListener('abort', abort)
   }
+}
 
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}))
-    throw new Error(errorData.detail || `请求失败，状态码: ${response.status}`)
-  }
+export interface JobSubmitted { job_id: string }
 
-  return response.json()
+export interface AIJob {
+  id: string
+  project_id: string
+  kind: string
+  target: string
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+  stage: string
+  progress: number
+  payload: { chapter_number?: number; writing_notes?: string }
+  result: { version_count?: number; failed_versions?: Array<{ index: number; detail: unknown }> } | null
+  error: { detail: unknown; status_code: number } | null
+  created_at: string
+  updated_at: string
+  heartbeat_at: string
 }
 
 // 类型定义
@@ -173,6 +242,7 @@ export class NovelAPI {
     const formData = new FormData()
     formData.append('file', file)
     return request(`${NOVELS_BASE}/import`, {
+      timeoutMs: null,
       method: 'POST',
       body: formData,
       headers: {
@@ -181,8 +251,8 @@ export class NovelAPI {
     })
   }
 
-  static async getNovel(projectId: string): Promise<NovelProject> {
-    return request(`${NOVELS_BASE}/${projectId}`)
+  static async getNovel(projectId: string, options: RequestOptions = {}): Promise<NovelProject> {
+    return request(`${NOVELS_BASE}/${projectId}`, options)
   }
 
   static async getChapter(projectId: string, chapterNumber: number): Promise<Chapter> {
@@ -200,6 +270,7 @@ export class NovelAPI {
   ): Promise<ConverseResponse> {
     const formattedUserInput = userInput || { id: null, value: null }
     return request(`${NOVELS_BASE}/${projectId}/concept/converse`, {
+      timeoutMs: null,
       method: 'POST',
       body: JSON.stringify({
         user_input: formattedUserInput,
@@ -210,6 +281,7 @@ export class NovelAPI {
 
   static async generateBlueprint(projectId: string): Promise<BlueprintGenerationResponse> {
     return request(`${NOVELS_BASE}/${projectId}/blueprint/generate`, {
+      timeoutMs: null,
       method: 'POST'
     })
   }
@@ -221,15 +293,30 @@ export class NovelAPI {
     })
   }
 
-  static async generateChapter(projectId: string, chapterNumber: number): Promise<NovelProject> {
+  static async generateChapter(projectId: string, chapterNumber: number, key: string, options: RequestOptions = {}): Promise<JobSubmitted> {
     return request(`${WRITER_BASE}/${projectId}/chapters/generate`, {
+      ...options,
       method: 'POST',
+      headers: { 'Idempotency-Key': key },
       body: JSON.stringify({ chapter_number: chapterNumber })
     })
   }
 
+  static async getJob(jobId: string, options: RequestOptions = {}): Promise<AIJob> {
+    return request(`${API_BASE_URL}/api/jobs/${jobId}`, options)
+  }
+
+  static async getJobs(projectId: string, options: RequestOptions = {}): Promise<AIJob[]> {
+    return request(`${API_BASE_URL}/api/jobs?project_id=${encodeURIComponent(projectId)}&active=1`, options)
+  }
+
+  static async cancelJob(jobId: string, options: RequestOptions = {}): Promise<AIJob> {
+    return request(`${API_BASE_URL}/api/jobs/${jobId}/cancel`, { ...options, method: 'POST' })
+  }
+
   static async evaluateChapter(projectId: string, chapterNumber: number): Promise<NovelProject> {
     return request(`${WRITER_BASE}/${projectId}/chapters/evaluate`, {
+      timeoutMs: null,
       method: 'POST',
       body: JSON.stringify({ chapter_number: chapterNumber })
     })
@@ -241,6 +328,7 @@ export class NovelAPI {
     versionIndex: number
   ): Promise<NovelProject> {
     return request(`${WRITER_BASE}/${projectId}/chapters/select`, {
+      timeoutMs: null,
       method: 'POST',
       body: JSON.stringify({
         chapter_number: chapterNumber,
@@ -286,6 +374,7 @@ export class NovelAPI {
     numChapters: number
   ): Promise<NovelProject> {
     return request(`${WRITER_BASE}/${projectId}/chapters/outline`, {
+      timeoutMs: null,
       method: 'POST',
       body: JSON.stringify({
         start_chapter: startChapter,
@@ -351,6 +440,7 @@ export class OptimizerAPI {
    */
   static async optimizeChapter(optimizeReq: OptimizeRequest): Promise<OptimizeResponse> {
     return request(`${OPTIMIZER_BASE}/optimize`, {
+      timeoutMs: null,
       method: 'POST',
       body: JSON.stringify(optimizeReq)
     })

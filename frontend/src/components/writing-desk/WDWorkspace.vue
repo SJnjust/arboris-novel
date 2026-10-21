@@ -36,7 +36,7 @@
             </button>
             <button
               @click="confirmRegenerateChapter"
-              :disabled="generatingChapter === selectedChapterNumber"
+              :disabled="jobActive || generatingChapter === selectedChapterNumber"
               class="md-btn md-btn-filled md-ripple flex items-center gap-2 whitespace-nowrap disabled:opacity-50"
             >
               <svg v-if="generatingChapter === selectedChapterNumber" class="w-4 h-4 animate-spin" fill="currentColor" viewBox="0 0 20 20">
@@ -49,6 +49,24 @@
             </button>
           </div>
         </div>
+      </div>
+
+      <div v-if="generationJob" class="px-6 py-3 border-b" aria-live="polite">
+        <template v-if="jobActive">
+          <div class="flex items-center justify-between gap-3">
+            <span>{{ stageLabel }} · {{ generationJob.progress }}%</span>
+            <button class="md-btn md-btn-tonal" :disabled="cancellingGeneration" @click="$emit('cancelGeneration')">
+              {{ cancellingGeneration ? '正在取消…' : '取消生成' }}
+            </button>
+          </div>
+          <div class="h-2 mt-2 rounded bg-gray-200" role="progressbar" :aria-valuenow="generationJob.progress" aria-valuemin="0" aria-valuemax="100" aria-label="章节生成进度">
+            <div class="h-full rounded bg-blue-600" :style="{ width: `${generationJob.progress}%` }"></div>
+          </div>
+        </template>
+        <p v-else-if="generationJob.status === 'failed'">{{ formatApiDetail(generationJob.error?.detail) }}</p>
+        <p v-else-if="generationJob.status === 'cancelled'">生成已取消，可以重新生成。</p>
+        <p v-else-if="generationJob.result?.failed_versions?.length">部分版本生成失败，已保存其余 {{ generationJob.result.version_count }} 个版本供选择。</p>
+        <p v-else>已生成 {{ generationJob.result?.version_count }} 个版本，请选择要采用的内容。</p>
       </div>
 
       <!-- 章节内容展示区 -->
@@ -131,9 +149,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, onUnmounted } from 'vue'
+import { computed, ref } from 'vue'
+import { formatApiDetail } from '@/api/novel'
 import { globalAlert } from '@/composables/useAlert'
-import type { Chapter, ChapterOutline, ChapterGenerationResponse, ChapterVersion, NovelProject } from '@/api/novel'
+import type { AIJob, Chapter, ChapterOutline, ChapterGenerationResponse, ChapterVersion, NovelProject } from '@/api/novel'
 import WorkspaceInitial from './workspace/WorkspaceInitial.vue'
 import ChapterGenerating from './workspace/ChapterGenerating.vue'
 import VersionSelector from './workspace/VersionSelector.vue'
@@ -150,10 +169,16 @@ interface Props {
   chapterGenerationResult: ChapterGenerationResponse | null
   selectedVersionIndex: number
   availableVersions: ChapterVersion[]
+  generationJob?: AIJob | null
+  cancellingGeneration?: boolean
   isSelectingVersion?: boolean
 }
 
 const props = defineProps<Props>()
+const stageLabel = computed(() => ({
+  queued: '等待生成', starting: '准备生成', backfill_summaries: '回补近期摘要', mission: '规划本章',
+  rag: '查找相关内容', versions: '生成候选版本', review: '比较候选版本', persist: '保存内容'
+}[props.generationJob?.stage || 'queued'] || '正在生成'))
 
 const emit = defineEmits([
   'regenerateChapter',
@@ -165,7 +190,7 @@ const emit = defineEmits([
   'generateChapter',
   'showVersionSelector',
   'showEvaluationDetail',
-  'fetchChapterStatus',
+  'cancelGeneration',
   'editChapter'
 ])
 
@@ -307,13 +332,15 @@ const canGenerateChapter = (chapterNumber: number | null) => {
   return true
 }
 
+const jobActive = computed(() => props.generationJob?.status === 'queued' || props.generationJob?.status === 'running')
+
 const currentComponent = computed(() => {
   if (!props.selectedChapterNumber) {
     return WorkspaceInitial
   }
 
   const status = selectedChapter.value?.generation_status
-  if (status === 'generating' || status === 'evaluating' || status === 'selecting') {
+  if (jobActive.value || status === 'generating' || status === 'evaluating' || status === 'selecting') {
     return ChapterGenerating // Use a generic "in-progress" component
   }
 
@@ -330,57 +357,15 @@ const currentComponent = computed(() => {
   return ChapterEmpty
 })
 
-// Polling for chapter status updates
-const pollingTimer = ref<number | null>(null)
-
-const startPolling = () => {
-  stopPolling()
-  pollingTimer.value = window.setInterval(() => {
-    emit('fetchChapterStatus')
-  }, 10000)
-}
-
-const stopPolling = () => {
-  if (pollingTimer.value) {
-    clearInterval(pollingTimer.value)
-    pollingTimer.value = null
-  }
-}
-
-watch(
-  () => [selectedChapter.value?.generation_status, props.evaluatingChapter, props.isSelectingVersion, props.selectedChapterNumber],
-  ([status, evaluating, selecting, chapterNumber]) => {
-    if (chapterNumber === null) {
-      stopPolling()
-      return
-    }
-
-    const isEvaluating = evaluating === chapterNumber
-    // Poll when generating, evaluating, or selecting a version
-    const needsPolling = status === 'generating' || status === 'evaluating' || status === 'selecting'
-
-    if (needsPolling) {
-      startPolling()
-    } else {
-      stopPolling()
-    }
-  },
-  { immediate: true }
-)
-
-onUnmounted(() => {
-  stopPolling()
-})
-
 const currentComponentProps = computed(() => {
   if (!props.selectedChapterNumber) {
     return {}
   }
   const status = selectedChapter.value?.generation_status
-  if (status === 'generating' || status === 'evaluating' || status === 'selecting') {
+  if (jobActive.value || status === 'generating' || status === 'evaluating' || status === 'selecting') {
     return {
       chapterNumber: props.selectedChapterNumber,
-      status: status
+      status: jobActive.value ? 'generating' : status
     }
   }
 

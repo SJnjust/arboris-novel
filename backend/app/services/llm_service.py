@@ -1,11 +1,13 @@
 # AIMETA P=LLM服务_大模型调用封装|R=API调用_流式生成|NR=不含业务逻辑|E=LLMService|X=internal|A=服务类|D=openai,httpx|S=net|RD=./README.ai
+import asyncio
 import logging
 import os
+from datetime import date
 from typing import Any, Dict, List, Optional
 
 import httpx
 from fastapi import HTTPException, status
-from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, InternalServerError
+from openai import APIConnectionError, APITimeoutError, InternalServerError
 
 from ..core.config import settings
 from ..repositories.llm_config_repository import LLMConfigRepository
@@ -14,7 +16,7 @@ from ..repositories.user_repository import UserRepository
 from ..services.admin_setting_service import AdminSettingService
 from ..services.prompt_service import PromptService
 from ..services.usage_service import UsageService
-from ..utils.llm_tool import ChatMessage, LLMClient
+from ..utils.llm_tool import ChatMessage, LLMClient, openai_client
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +29,11 @@ except ImportError:  # pragma: no cover - Ollama 为可选依赖
 class LLMService:
     """封装与大模型交互的所有逻辑，包括配额控制与配置选择。"""
 
-    def __init__(self, session):
+    def __init__(self, session, *, config=None, record_usage=True, usage_callback=None):
         self.session = session
+        self._fixed_config = config
+        self._record_usage = record_usage
+        self._usage_callback = usage_callback
         self.llm_repo = LLMConfigRepository(session)
         self.system_config_repo = SystemConfigRepository(session)
         self.user_repo = UserRepository(session)
@@ -105,45 +110,52 @@ class LLMService:
         return await self._stream_and_collect(messages, temperature=temperature, user_id=user_id, timeout=timeout)
 
     async def _stream_and_collect(
-        self,
-        messages: List[Dict[str, str]],
-        *,
-        temperature: float,
-        user_id: Optional[int],
-        timeout: float,
-        response_format: Optional[str] = None,
-        max_tokens: Optional[int] = None,
-        top_p: Optional[float] = None,
+        self, messages: List[Dict[str, str]], *, temperature: float,
+        user_id: Optional[int], timeout: float, response_format: Optional[str] = None,
+        max_tokens: Optional[int] = None, top_p: Optional[float] = None,
     ) -> str:
-        config = await self._resolve_llm_config(user_id)
-        client = LLMClient(api_key=config["api_key"], base_url=config.get("base_url"))
-
-        chat_messages = [ChatMessage(role=msg["role"], content=msg["content"]) for msg in messages]
-
-        full_response = ""
-        finish_reason = None
-
-        logger.info(
-            "Streaming LLM response: model=%s user_id=%s messages=%d",
-            config.get("model"),
-            user_id,
-            len(messages),
-        )
+        async def operation():
+            config = self._fixed_config or await self._resolve_llm_config(user_id)
+            return await self._collect(messages, config=config, temperature=temperature,
+                                       user_id=user_id, timeout=timeout, response_format=response_format,
+                                       max_tokens=max_tokens, top_p=top_p)
 
         try:
-            async for part in client.stream_chat(
-                messages=chat_messages,
-                model=config.get("model"),
-                temperature=temperature,
-                timeout=int(timeout),
-                response_format=response_format,
-                max_tokens=max_tokens,
-                top_p=top_p,
-            ):
-                if part.get("content"):
-                    full_response += part["content"]
-                if part.get("finish_reason"):
-                    finish_reason = part["finish_reason"]
+            return await asyncio.wait_for(operation(), timeout=min(timeout, settings.llm_deadline_seconds))
+        except asyncio.TimeoutError as exc:
+            raise HTTPException(status_code=504, detail="AI 生成超过总时限，请稍后重试或缩小生成范围") from exc
+
+    async def _collect(self, messages, *, config, temperature, user_id, timeout,
+                       response_format, max_tokens, top_p):
+        client = LLMClient(api_key=config["api_key"], base_url=config.get("base_url"))
+        full_response = ""
+        finish_reason = None
+        completed_calls = 0
+        history = list(messages)
+        try:
+            for attempt in range(3):
+                segment = ""
+                finish_reason = None
+                async for part in client.stream_chat(
+                    messages=[ChatMessage(role=msg["role"], content=msg["content"]) for msg in history],
+                    model=config.get("model"), temperature=temperature, timeout=int(timeout),
+                    response_format=response_format, max_tokens=max_tokens, top_p=top_p,
+                ):
+                    segment += part.get("content") or ""
+                    if part.get("finish_reason"):
+                        finish_reason = part["finish_reason"]
+                completed_calls += 1
+                if self._usage_callback:
+                    self._usage_callback()
+                full_response += segment
+                if finish_reason != "length":
+                    break
+                if response_format:
+                    raise HTTPException(status_code=500, detail="AI 响应因长度限制被截断：JSON 输出不支持自动续写，请缩小生成范围")
+                if attempt == 2:
+                    raise HTTPException(status_code=500, detail="AI 响应因长度限制被截断，续写 2 次后仍未完成，请缩小生成范围")
+                history = [*messages, {"role": "assistant", "content": full_response},
+                           {"role": "user", "content": "请从上一段最后一个字符之后继续，只返回后续正文，不要重复已生成的内容。"}]
         except InternalServerError as exc:
             detail = "AI 服务内部错误，请稍后重试"
             response = getattr(exc, "response", None)
@@ -180,48 +192,14 @@ class LLMService:
             )
             raise HTTPException(status_code=503, detail=detail) from exc
 
-        logger.debug(
-            "LLM response collected: model=%s user_id=%s finish_reason=%s preview=%s",
-            config.get("model"),
-            user_id,
-            finish_reason,
-            full_response[:500],
-        )
-
-        if finish_reason == "length":
-            logger.warning(
-                "LLM response truncated: model=%s user_id=%s response_length=%d",
-                config.get("model"),
-                user_id,
-                len(full_response),
-            )
-            raise HTTPException(
-                status_code=500,
-                detail=f"AI 响应因长度限制被截断（已生成 {len(full_response)} 字符），请缩短输入内容或调整模型参数"
-            )
 
         if not full_response:
-            logger.error(
-                "LLM returned empty response: model=%s user_id=%s finish_reason=%s",
-                config.get("model"),
-                user_id,
-                finish_reason,
-            )
-            raise HTTPException(
-                status_code=500,
-                detail=f"AI 未返回有效内容（结束原因: {finish_reason or '未知'}），请稍后重试或联系管理员"
-            )
-
-        await self.usage_service.increment("api_request_count")
-        logger.info(
-            "LLM response success: model=%s user_id=%s chars=%d",
-            config.get("model"),
-            user_id,
-            len(full_response),
-        )
+            raise HTTPException(status_code=500, detail=f"AI 未返回有效内容（结束原因: {finish_reason or '未知'}），请稍后重试或联系管理员")
+        if self._record_usage:
+            await self.usage_service.increment("api_request_count", completed_calls, quota=config.get("_quota"))
         return full_response
 
-    async def _resolve_llm_config(self, user_id: Optional[int]) -> Dict[str, Optional[str]]:
+    async def _resolve_llm_config(self, user_id: Optional[int]) -> Dict[str, Any]:
         if user_id:
             config = await self.llm_repo.get_by_user(user_id)
             if config and config.llm_provider_api_key:
@@ -230,10 +208,6 @@ class LLMService:
                     "base_url": config.llm_provider_url,
                     "model": config.llm_provider_model,
                 }
-
-        # 检查每日使用次数限制
-        if user_id:
-            await self._enforce_daily_limit(user_id)
 
         api_key = await self._get_config_value("llm.api_key")
         base_url = await self._get_config_value("llm.base_url")
@@ -246,7 +220,9 @@ class LLMService:
                 detail="未配置默认 LLM API Key，请联系管理员配置系统默认 API Key 或在个人设置中配置自定义 API Key"
             )
 
-        return {"api_key": api_key, "base_url": base_url, "model": model}
+        # 只有配置完整时才预留，避免配置失败留下无法归还的计数。
+        quota = {"user_id": user_id, "date": await self._enforce_daily_limit(user_id)} if user_id else None
+        return {"api_key": api_key, "base_url": base_url, "model": model, "_quota": quota}
 
     async def get_embedding(
         self,
@@ -296,15 +272,12 @@ class LLMService:
             if not isinstance(embedding, list):
                 embedding = list(embedding)
         else:
-            config = await self._resolve_llm_config(user_id)
+            config = self._fixed_config or await self._resolve_llm_config(user_id)
             api_key = await self._get_config_value("embedding.api_key") or config["api_key"]
             base_url = await self._get_config_value("embedding.base_url") or config.get("base_url")
-            client = AsyncOpenAI(api_key=api_key, base_url=base_url)
             try:
-                response = await client.embeddings.create(
-                    input=text,
-                    model=target_model,
-                )
+                async with openai_client(api_key, base_url) as client:
+                    response = await asyncio.wait_for(client.embeddings.create(input=text, model=target_model), settings.llm_deadline_seconds)
             except Exception as exc:  # pragma: no cover - 网络或鉴权失败
                 logger.error(
                     "OpenAI 嵌入请求失败: model=%s base_url=%s user_id=%s error=%s",
@@ -330,6 +303,8 @@ class LLMService:
                 dimension = int(vector_size_str)
         if dimension:
             self._embedding_dimensions[target_model] = dimension
+        if self._usage_callback:
+            self._usage_callback("embedding")
         return embedding
 
     async def get_embedding_dimension(self, model: Optional[str] = None) -> Optional[int]:
@@ -346,19 +321,21 @@ class LLMService:
         vector_size_str = await self._get_config_value("embedding.model_vector_size")
         return int(vector_size_str) if vector_size_str else None
 
-    async def _enforce_daily_limit(self, user_id: int) -> None:
+    async def _enforce_daily_limit(self, user_id: int) -> str:
         limit_str = await self.admin_setting_service.get("daily_request_limit", "100")
         limit = int(limit_str or 10)
-        used = await self.user_repo.get_daily_request(user_id)
-        if used >= limit:
+        day = date.today()
+        if not await self.user_repo.reserve_daily_request(user_id, limit, day):
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="今日请求次数已达上限，请明日再试或设置自定义 API Key。",
             )
-        await self.user_repo.increment_daily_request(user_id)
         await self.session.commit()
+        return day.isoformat()
 
     async def _get_config_value(self, key: str) -> Optional[str]:
+        if self._fixed_config is not None and "_settings" in self._fixed_config:
+            return self._fixed_config["_settings"].get(key)
         record = await self.system_config_repo.get_by_key(key)
         if record:
             return record.value

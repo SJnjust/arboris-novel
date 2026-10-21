@@ -1,6 +1,7 @@
 # AIMETA P=导入服务_小说导入业务逻辑|R=小说导入_格式转换|NR=不含内容生成|E=ImportService|X=internal|A=服务类|D=sqlalchemy|S=db,fs|RD=./README.ai
 from __future__ import annotations
 
+from ..utils.json_utils import parse_llm_json
 import json
 import logging
 import re
@@ -362,7 +363,7 @@ class ImportService:
             
             response = remove_think_tags(response)
             normalized = unwrap_markdown_json(response)
-            data = json.loads(normalized)
+            data = parse_llm_json(response, allow_lossy=False)
             
             # 尝试多种可能的 JSON 结构
             if isinstance(data, list):
@@ -379,6 +380,10 @@ class ImportService:
             
             return []
             
+        except json.JSONDecodeError as error:
+            raise HTTPException(status_code=500, detail="AI 输出不完整或格式不正确，请重试导入") from error
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"角色筛选阶段失败: {e}", exc_info=True)
             return [] # 失败时返回空，后续流程将回退到仅使用潜在名单
@@ -456,7 +461,7 @@ class ImportService:
             response = remove_think_tags(response)
             normalized = unwrap_markdown_json(response)
             sanitized = sanitize_json_like_text(normalized)
-            data = json.loads(sanitized)
+            data = parse_llm_json(response, allow_lossy=False)
             
             # --- 数据标准化处理 (Robustness Fixes) ---
             if "world_setting" in data:
@@ -507,6 +512,10 @@ class ImportService:
 
             return Blueprint(**data)
             
+        except json.JSONDecodeError as error:
+            raise HTTPException(status_code=500, detail="AI 输出不完整或格式不正确，请重试导入") from error
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"AI 分析失败: {e}", exc_info=True)
             # 分析失败时返回一个空的 Blueprint，但保留标题等基本信息

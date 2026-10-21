@@ -13,6 +13,7 @@
 - major: 主要问题，生成修订版本供选择
 - minor: 轻微问题，仅标注提示
 """
+from ..utils.json_utils import parse_llm_json
 import logging
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
@@ -407,13 +408,7 @@ class ConsistencyService:
         
         try:
             # 清理响应
-            response = response.strip()
-            if response.startswith("```"):
-                response = response.split("```")[1]
-                if response.startswith("json"):
-                    response = response[4:]
-            
-            data = json.loads(response)
+            data = parse_llm_json(response, allow_lossy=False)
             
             violations = []
             for v in data.get("violations", []):

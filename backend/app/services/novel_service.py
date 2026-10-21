@@ -1,6 +1,7 @@
 # AIMETA P=小说服务_小说管理业务逻辑|R=小说CRUD_章节管理|NR=不含内容生成|E=NovelService|X=internal|A=服务类|D=sqlalchemy|S=db|RD=./README.ai
 from __future__ import annotations
 
+from ..utils.json_utils import parse_llm_json
 import json
 import uuid
 from datetime import datetime, timezone
@@ -62,7 +63,7 @@ def _clean_string(text: str, parse_json: bool = True) -> str:
         or (stripped.startswith("[") and stripped.endswith("]"))
     ):
         try:
-            parsed = json.loads(stripped)
+            parsed = parse_llm_json(stripped, allow_lossy=False)
             coerced = _coerce_text(parsed)
             if coerced:
                 return coerced

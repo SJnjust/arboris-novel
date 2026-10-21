@@ -27,16 +27,27 @@ os.environ.update(
     LOGGING_LEVEL="WARNING",
     VECTOR_DB_URL="",
     OPENAI_API_KEY="offline-test-placeholder",
+    WRITER_CHAPTER_VERSION_COUNT="2",
+    AI_JOB_USER_CONCURRENCY="2",
+    AI_JOB_RETENTION_DAYS="7",
+    CHAPTER_SUMMARY_BACKFILL_LIMIT="5",
+    LLM_DEADLINE_SECONDS="600",
+    HTTP_REQUEST_DEADLINE_SECONDS="90",
 )
 with patch.object(DotEnvSettingsSource, "_read_env_files", return_value={}):
     from app.main import app
 
 from app.core.security import hash_password
 from app.db.base import Base
-from app.db.session import get_session
+from app.db.session import configure_sqlite, get_session
 from app.models import Prompt, User
 from app.services import llm_service, prompt_service
 from app.services.chapter_ingest_service import ChapterIngestionService
+from app.services.chapter_generation_service import ChapterGenerationService
+from app.services.job_service import JobRunner
+
+REAL_INGEST_CHAPTER = ChapterIngestionService.ingest_chapter
+REAL_RESOLVE_CONFIG = llm_service.LLMService._resolve_llm_config
 
 
 @pytest.fixture(autouse=True)
@@ -55,6 +66,7 @@ def no_network(monkeypatch):
 @pytest_asyncio.fixture
 async def database(tmp_path, monkeypatch):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+    configure_sqlite(engine)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
@@ -75,7 +87,18 @@ async def database(tmp_path, monkeypatch):
 
 
 @pytest_asyncio.fixture
-async def client(database):
+async def job_runner(database, monkeypatch):
+    runner = JobRunner(database)
+    runner.register("chapter_generate", ChapterGenerationService())
+    monkeypatch.setattr(app.state, "job_runner", runner)
+    try:
+        yield runner
+    finally:
+        await runner.shutdown()
+
+
+@pytest_asyncio.fixture
+async def client(database, job_runner):
     async def session_dependency():
         async with database() as session:
             yield session
@@ -86,6 +109,24 @@ async def client(database):
             yield client
     finally:
         app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def wait_job(client, auth):
+    async def wait(job_id, *, timeout=10):
+        import asyncio
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            response = await client.get(f"/api/jobs/{job_id}", headers=auth)
+            assert response.status_code == 200
+            result = response.json()
+            if result["status"] in ("succeeded", "failed", "cancelled"):
+                return result
+            await asyncio.sleep(0.01)
+        raise AssertionError("Job did not reach a terminal state")
+
+    return wait
 
 
 @pytest.fixture

@@ -2,6 +2,7 @@
 """
 情感曲线和伏笔追踪分析API
 """
+from ...utils.json_utils import parse_llm_json
 import json
 import logging
 import re
@@ -466,7 +467,7 @@ async def analyze_emotion_with_ai(
         import json
         from ...utils.json_utils import unwrap_markdown_json
         cleaned = unwrap_markdown_json(response)
-        data = json.loads(cleaned)
+        data = parse_llm_json(response, allow_lossy=False)
         
         emotion_points = []
         emotion_counts = {}

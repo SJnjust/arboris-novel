@@ -3,3 +3,4 @@ AILIST NAME=__init__.py|K=file|P=核心包初始化_导出核心组件|E=-|A=-
 AILIST NAME=config.py|K=file|P=应用配置_环境变量加载和设置类|E=settings|A=Settings类_环境变量读取
 AILIST NAME=dependencies.py|K=file|P=依赖注入_FastAPI依赖项定义|E=get_db_get_current_user|A=数据库会话_当前用户获取
 AILIST NAME=security.py|K=file|P=安全模块_JWT令牌和密码处理|E=create_token_verify_password|A=JWT生成验证_密码哈希
+AILIST NAME=request_deadline.py|K=file|P=显式短请求时限|E=RequestDeadlineRoute_request_deadline|A=任务接口504_不限制流发送

@@ -1,10 +1,12 @@
 # AIMETA P=小说API_项目和章节管理|R=小说CRUD_章节管理|NR=不含内容生成|E=route:GET_POST_/api/novels/*|X=http|A=小说CRUD_章节|D=fastapi,sqlalchemy|S=db|RD=./README.ai
+from ...utils.json_utils import parse_llm_json
 import json
 import logging
 from typing import Dict, List
 
 from fastapi import APIRouter, Body, Depends, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import delete
 
 from ...core.dependencies import get_current_user
 from ...db.session import get_session
@@ -21,6 +23,8 @@ from ...schemas.novel import (
     NovelSectionType,
 )
 from ...schemas.user import UserInDB
+from ...models.ai_job import AIJob
+from ...services.job_service import JobRunner, get_job_runner
 from ...services.import_service import ImportService
 from ...services.llm_service import LLMService
 from ...services.novel_service import NovelService
@@ -134,8 +138,16 @@ async def delete_novels(
     project_ids: List[str] = Body(...),
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
+    runner: JobRunner = Depends(get_job_runner),
 ) -> Dict[str, str]:
     novel_service = NovelService(session)
+    for project_id in project_ids:
+        await novel_service.ensure_project_owner(project_id, current_user.id)
+    await session.rollback()
+    for job in await runner.list(current_user.id, active=True):
+        if job.project_id in project_ids:
+            await runner.cancel(job.id, current_user.id)
+    await session.execute(delete(AIJob).where(AIJob.project_id.in_(project_ids)))
     await novel_service.delete_projects(project_ids, current_user.id)
     logger.info("用户 %s 删除项目 %s", current_user.id, project_ids)
     return {"status": "success", "message": f"成功删除 {len(project_ids)} 个项目"}
@@ -184,7 +196,7 @@ async def converse_with_concept(
     try:
         normalized = unwrap_markdown_json(llm_response)
         sanitized = sanitize_json_like_text(normalized)
-        parsed = json.loads(sanitized)
+        parsed = parse_llm_json(llm_response, allow_lossy=False)
     except json.JSONDecodeError as exc:
         logger.exception(
             "Failed to parse concept converse response: project_id=%s user_id=%s error=%s\nOriginal response: %s\nNormalized: %s\nSanitized: %s",
@@ -200,6 +212,7 @@ async def converse_with_concept(
             detail=f"概念对话失败，AI 返回的内容格式不正确。请重试或联系管理员。错误详情: {str(exc)}"
         ) from exc
 
+    normalized = json.dumps(parsed, ensure_ascii=False)
     await novel_service.append_conversation(project_id, "user", user_content)
     await novel_service.append_conversation(project_id, "assistant", normalized)
 
@@ -271,7 +284,7 @@ async def generate_blueprint(
     blueprint_normalized = unwrap_markdown_json(blueprint_raw)
     blueprint_sanitized = sanitize_json_like_text(blueprint_normalized)
     try:
-        blueprint_data = json.loads(blueprint_sanitized)
+        blueprint_data = parse_llm_json(blueprint_raw, allow_lossy=False)
     except json.JSONDecodeError as exc:
         logger.error(
             "项目 %s 蓝图生成 JSON 解析失败: %s\n原始响应: %s\n标准化后: %s\n清洗后: %s",

@@ -3,6 +3,7 @@
 
 每隔 N 章触发一次回顾，检查整体节奏、角色发展、伏笔状态，生成中期调整建议。
 """
+from ..utils.json_utils import parse_llm_json
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 import json
@@ -159,11 +160,7 @@ class ChapterReviewService:
                 timeout=120.0
             )
             
-            content = response
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                return json.loads(content[json_start:json_end])
+            return parse_llm_json(response, allow_lossy=False)
         except Exception as e:
             logger.warning(f"节奏分析失败: {e}")
         
@@ -226,11 +223,7 @@ class ChapterReviewService:
                 timeout=120.0
             )
             
-            content = response
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                return json.loads(content[json_start:json_end])
+            return parse_llm_json(response, allow_lossy=False)
         except Exception as e:
             logger.warning(f"角色发展分析失败: {e}")
         
@@ -347,11 +340,7 @@ class ChapterReviewService:
                 timeout=120.0
             )
             
-            content = response
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                return json.loads(content[json_start:json_end])
+            return parse_llm_json(response, allow_lossy=False)
         except Exception as e:
             logger.warning(f"一致性检查失败: {e}")
         
@@ -495,11 +484,7 @@ class ChapterReviewService:
                 timeout=120.0
             )
             
-            content = response
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                return json.loads(content[json_start:json_end])
+            return parse_llm_json(response, allow_lossy=False)
         except Exception as e:
             logger.warning(f"生成调整计划失败: {e}")
         

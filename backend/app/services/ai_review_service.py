@@ -8,6 +8,7 @@ AIReviewService: AI 评审服务
 3. 选出最佳版本并给出改进建议
 """
 
+from ..utils.json_utils import parse_llm_json
 import json
 import logging
 from dataclasses import dataclass
@@ -94,9 +95,8 @@ class AIReviewService:
                 timeout=180.0,
             )
             cleaned = remove_think_tags(response)
-            normalized = unwrap_markdown_json(cleaned)
             
-            result = self._parse_review_response(normalized)
+            result = self._parse_review_response(cleaned)
             result.raw_response = cleaned
             
             logger.info(
@@ -138,7 +138,7 @@ class AIReviewService:
     def _parse_review_response(self, response: str) -> ReviewResult:
         """解析评审响应"""
         try:
-            data = json.loads(response)
+            data = parse_llm_json(response, allow_lossy=False)
             return ReviewResult(
                 best_version_index=data.get("best_version_index", 0),
                 scores=data.get("scores", {}),
@@ -148,15 +148,8 @@ class AIReviewService:
                 final_recommendation=data.get("final_recommendation", ""),
             )
         except json.JSONDecodeError:
-            logger.warning("评审响应不是有效 JSON，使用默认结果")
-            return ReviewResult(
-                best_version_index=0,
-                scores={},
-                overall_evaluation=response[:500] if response else "",
-                critical_flaws=[],
-                refinement_suggestions="",
-                final_recommendation="解析失败，建议人工审核",
-            )
+            logger.warning("评审响应不是完整 JSON，跳过本次评审结果")
+            raise
 
     async def auto_select_best_version(
         self,

@@ -18,3 +18,5 @@ AILIST NAME=vector_store_service.py|K=file|P=向量存储服务_文本向量化|
 AILIST NAME=vector_store_service_ext.py|K=file|P=向量存储服务扩展_章节写入和搜索|E=VectorStoreServiceExt|A=章节分块_向量化_搜索
 AILIST NAME=consistency_service.py|K=file|P=一致性检查服务_剧情逻辑矛盾检测|E=ConsistencyService|A=一致性检查_冲突检测_修复建议
 AILIST NAME=blueprint_service.py|K=file|P=章节蓝图服务_蓝图元数据管理|E=BlueprintService|A=蓝图CRUD_元数据生成
+AILIST NAME=job_service.py|K=file|P=后台任务调度_准入_取消_恢复|E=JobRunner|A=强引用_幂等_并发_心跳
+AILIST NAME=chapter_generation_service.py|K=file|P=章节生成后台流水线|E=ChapterGenerationService|A=摘要_规划_并行版本_持久化

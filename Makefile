@@ -1,7 +1,7 @@
 PYTHON ?= $(CURDIR)/backend/.venv/bin/python
 NPM ?= npm
 
-.PHONY: test check type-check build
+.PHONY: test check frontend-test type-check build
 
 test:
 	cd backend && $(PYTHON) -m pytest
@@ -9,7 +9,10 @@ test:
 type-check:
 	cd frontend && $(NPM) run type-check
 
+frontend-test:
+	cd frontend && $(NPM) test
+
 build:
 	cd frontend && $(NPM) run build-only
 
-check: test type-check build
+check: test frontend-test type-check build

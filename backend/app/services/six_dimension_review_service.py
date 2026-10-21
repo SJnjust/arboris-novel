@@ -9,6 +9,7 @@
 5. 风格合规检查
 6. 冲突检测
 """
+from ..utils.json_utils import parse_llm_json
 from typing import Optional, Dict, Any, List
 import json
 
@@ -85,12 +86,8 @@ class SixDimensionReviewService:
         
         # 解析结果
         try:
-            content = response or ""
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                result = json.loads(content[json_start:json_end])
-                return result
+            result = parse_llm_json(response, allow_lossy=False)
+            return result
         except json.JSONDecodeError:
             pass
         

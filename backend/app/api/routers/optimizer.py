@@ -3,6 +3,7 @@
 章节内容分层优化API
 支持对话、环境描写、心理活动、节奏韵律四个维度的深度优化
 """
+from ...utils.json_utils import looks_like_json, parse_llm_json
 import json
 import logging
 from typing import Optional
@@ -184,10 +185,12 @@ async def optimize_chapter(
         normalized = unwrap_markdown_json(cleaned)
         
         try:
-            result = json.loads(normalized)
+            result = parse_llm_json(response, allow_lossy=False)
             optimized_content = result.get("optimized_content", cleaned)
             optimization_notes = result.get("optimization_notes", "优化完成")
         except json.JSONDecodeError:
+            if looks_like_json(cleaned):
+                raise HTTPException(status_code=500, detail="AI 输出不完整或格式不正确，请重试")
             # 如果无法解析JSON，将整个响应作为优化后的内容
             optimized_content = cleaned
             optimization_notes = "优化完成（响应格式非标准JSON）"
