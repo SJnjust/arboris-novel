@@ -43,11 +43,31 @@ async def _project_lock(project_id):
             _LOCKS.pop(project_id, None)
 
 
+def _ui_control(value):
+    """把模型给出的控件规整为前端支持的 single_choice / text_input，缺失或未知类型退回文本输入。"""
+    control = value if isinstance(value, dict) else {}
+    options = []
+    for index, option in enumerate(control.get("options") or [], start=1):
+        if isinstance(option, dict):
+            label = str(option.get("label") or option.get("text") or option.get("value") or "").strip()
+            option_id = str(option.get("id") or index)
+        else:
+            label, option_id = str(option).strip(), str(index)
+        if label:
+            options.append({"id": option_id, "label": label})
+    kind = str(control.get("type") or "").strip().lower()
+    placeholder = control.get("placeholder") if isinstance(control.get("placeholder"), str) else None
+    if options and kind != "text_input":
+        return {"type": "single_choice", "options": options, "placeholder": placeholder}
+    return {"type": "text_input", "options": None, "placeholder": placeholder}
+
+
 def _response(parsed):
     if not isinstance(parsed, dict):
         raise ValueError("AI 回复必须是 JSON 对象")
     parsed = dict(parsed)
     parsed.setdefault("conversation_state", {})
+    parsed["ui_control"] = _ui_control(parsed.get("ui_control"))
     if parsed.get("is_complete"):
         parsed = {**parsed, "ready_for_blueprint": True}
     return ConverseResponse(**parsed)
@@ -147,7 +167,8 @@ class ConceptService:
             # 没带消息 ID 的旧同步调用保留失败时不写 user 的行为。
             if not message_id:
                 await self.novel.append_conversation(project_id, "user", user_content)
-            await self.novel.append_conversation(project_id, "assistant", json.dumps(parsed, ensure_ascii=False), metadata)
+            stored = {**parsed, "ui_control": response.ui_control.model_dump(exclude_none=True)}
+            await self.novel.append_conversation(project_id, "assistant", json.dumps(stored, ensure_ascii=False), metadata)
             await emit("final", response.model_dump())
 
     async def events(self, project_id, user_id, request):
