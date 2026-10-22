@@ -110,7 +110,7 @@ async def create_foreshadowing(
         )
     except Exception as e:
         logger.exception(f"创建伏笔失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="操作失败，请稍后重试")
 
 
 @router.get("/{project_id}/foreshadowings")
@@ -156,7 +156,7 @@ async def list_foreshadowings(
         }
     except Exception as e:
         logger.exception(f"获取伏笔列表失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="操作失败，请稍后重试")
 
 
 @router.post("/{project_id}/foreshadowings/{foreshadowing_id}/resolve")
@@ -187,7 +187,7 @@ async def resolve_foreshadowing(
         }
     except Exception as e:
         logger.exception(f"标记伏笔回收失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="操作失败，请稍后重试")
 
 
 @router.get("/{project_id}/foreshadowings/reminders")
@@ -218,7 +218,7 @@ async def get_reminders(
         }
     except Exception as e:
         logger.exception(f"获取提醒失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="操作失败，请稍后重试")
 
 
 @router.post("/{project_id}/foreshadowings/reminders/{reminder_id}/dismiss")
@@ -241,7 +241,7 @@ async def dismiss_reminder(
         }
     except Exception as e:
         logger.exception(f"忽略提醒失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="操作失败，请稍后重试")
 
 
 @router.get("/{project_id}/foreshadowings/analysis")
@@ -270,4 +270,4 @@ async def get_analysis(
         }
     except Exception as e:
         logger.exception(f"获取分析失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="操作失败，请稍后重试")

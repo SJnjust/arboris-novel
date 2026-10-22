@@ -64,30 +64,9 @@
       <!-- 加载文本和进度 -->
       <div class="space-y-4">
         <h3 class="text-xl font-semibold text-gray-800 animate-pulse">{{ loadingText }}</h3>
-        <p class="text-gray-600">AI正在为您精心打造独特的故事蓝图...</p>
-
-        <!-- 进度条 -->
-        <div class="w-full max-w-md mx-auto">
-          <!-- <div class="flex justify-between text-xs text-gray-500 mb-2">
-            <span>生成进度</span>
-            <span>{{ Math.round(progress) }}%</span>
-          </div> -->
-          <div class="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
-            <div
-              class="h-2 rounded-full transition-all duration-1000 ease-out relative"
-              :class="progress >= 100 ? 'bg-gradient-to-r from-green-500 to-emerald-600' : 'bg-gradient-to-r from-indigo-500 to-purple-600'"
-              :style="{ width: `${progress}%` }"
-            >
-              <!-- 闪光效果 -->
-              <div class="absolute inset-0 bg-gradient-to-r from-transparent via-white to-transparent opacity-30 animate-shimmer"></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 倒计时 -->
-        <!-- <div class="text-sm text-gray-500">
-          <span>预计完成时间: {{ timeRemaining }}秒</span>
-        </div> -->
+        <p class="text-gray-600">{{ progress }}% · 已完成的批次会保存，离开或刷新后可恢复任务。</p>
+        <progress class="w-full max-w-md" :value="progress" max="100" aria-label="蓝图生成进度"></progress>
+        <button class="md-btn md-btn-outlined" :disabled="jobs.cancelling.value" @click="cancel">取消生成</button>
 
         <!-- 温馨提示 -->
         <div class="mt-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
@@ -101,6 +80,8 @@
       </div>
     </div>
 
+    <p v-if="failure" role="alert" class="text-red-600 my-4">{{ failure }} 已保存的完整数据不会丢失。</p>
+
     <!-- 操作按钮 -->
     <div v-else class="text-center space-x-4">
       <!-- <button
@@ -110,7 +91,7 @@
         返回对话
       </button> -->
       <button
-        @click="generateBlueprint"
+        @click="generateBlueprint()"
         :disabled="isGenerating"
         class="bg-gradient-to-r from-indigo-500 to-purple-600 text-white font-bold py-3 px-8 rounded-full hover:from-indigo-600 hover:to-purple-700 transition-all duration-300 transform hover:scale-105 shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
       >
@@ -118,7 +99,7 @@
           <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
             <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"></path>
           </svg>
-          开始创建蓝图
+          {{ latestJob?.status === 'failed' || latestJob?.status === 'cancelled' ? '继续生成蓝图' : '开始创建蓝图' }}
         </span>
       </button>
     </div>
@@ -126,10 +107,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onUnmounted, inject } from 'vue'
+import { errorMessage } from '@/utils/errors'
+import { ref, computed } from 'vue'
 import { marked } from 'marked'
 import { useNovelStore } from '@/stores/novel'
 import { globalAlert } from '@/composables/useAlert'
+import { NovelAPI, formatApiDetail } from '@/api/novel'
+import { useJob } from '@/composables/useJob'
+import { planningStage } from '@/utils/volumes'
 
 // 配置 marked
 marked.setOptions({
@@ -139,6 +124,7 @@ marked.setOptions({
 
 interface Props {
   aiMessage: string
+  regenerate?: boolean
 }
 
 const props = defineProps<Props>()
@@ -149,118 +135,45 @@ const emit = defineEmits<{
 }>()
 
 const novelStore = useNovelStore()
-const isGenerating = ref(false)
-const progress = ref(0)
-const timeElapsed = ref(0)
-const maxTime = 180 // 180秒超时
-
-let progressTimer: NodeJS.Timeout | null = null
-let timeoutTimer: NodeJS.Timeout | null = null
-
-// 渲染 Markdown
-const renderedAiMessage = computed(() => {
-  return marked.parse(props.aiMessage)
-})
-
-// 动态加载文本
-const loadingText = computed(() => {
-  if (progress.value >= 100) {
-    return '生成完成！正在准备展示...'
-  }
-
-  const messages = [
-    '正在分析故事结构...',
-    '构建角色关系网络...',
-    '生成情节发展脉络...',
-    '完善世界观设定...',
-    '优化章节安排...',
-    '最后润色细节...'
-  ]
-
-  const index = Math.floor((progress.value / 100) * messages.length)
-  return messages[Math.min(index, messages.length - 1)]
-})
-
-// 剩余时间计算
-const timeRemaining = computed(() => {
-  return Math.max(0, maxTime - timeElapsed.value)
-})
-
-const generateBlueprint = async () => {
-  isGenerating.value = true
-  progress.value = 0
-  timeElapsed.value = 0
-
-  // 启动进度条动画
-  progressTimer = setInterval(() => {
-    timeElapsed.value += 0.1
-
-    // 非线性进度增长，前面快后面慢
-    const normalizedTime = timeElapsed.value / maxTime
-    if (normalizedTime < 0.7) {
-      // 前70%时间内进度到80%
-      progress.value = Math.min(80, (normalizedTime / 0.7) * 80)
-    } else {
-      // 后30%时间内从80%到95%
-      const remainingProgress = (normalizedTime - 0.7) / 0.3
-      progress.value = Math.min(95, 80 + remainingProgress * 15)
+const submitting = ref(false)
+const submittedOnce = ref(false)
+const jobs = useJob(() => novelStore.currentProject?.id, {
+  kind: 'blueprint_generate',
+  async onTerminal(job, signal) {
+    const project = await NovelAPI.getNovel(job.project_id, { signal })
+    if (signal.aborted || novelStore.currentProject?.id !== job.project_id) return
+    novelStore.setCurrentProject(project)
+    if (job.status === 'succeeded' && project.blueprint) {
+      // 先让 useJob 清除已消费的 ID，再切换父界面，避免重新生成时重放旧任务。
+      return () => emit('blueprintGenerated', { blueprint: project.blueprint, ai_message: '核心蓝图、分卷规划和第 1 卷大纲已完成，可继续生成后续卷。' })
     }
-  }, 100)
+  }
+})
+const latestJob = computed(() => jobs.jobs.value[0])
+const isGenerating = computed(() => submitting.value || jobs.activeJobs.value.length > 0)
+const progress = computed(() => latestJob.value?.progress || 0)
+const renderedAiMessage = computed(() => marked.parse(props.aiMessage))
+const loadingText = computed(() => planningStage(latestJob.value?.stage || 'starting'))
+const failure = computed(() => latestJob.value?.status === 'failed' ? formatApiDetail(latestJob.value.error?.detail) : latestJob.value?.status === 'cancelled' ? '已取消；再次生成会从已保存的进度继续。' : jobs.error.value)
 
-  // 60秒超时
-  timeoutTimer = setTimeout(() => {
-    clearTimers()
-    isGenerating.value = false
-    globalAlert.showError('生成超时，请稍后重试。如果问题持续，请检查网络连接。', '生成超时')
-  }, maxTime * 1000)
-
+const generateBlueprint = async (resume = true) => {
+  if (isGenerating.value) return
+  submitting.value = true
   try {
-    // 直接调用store中的API
-    console.log('开始调用generateBlueprint API...')
-    const response = await novelStore.generateBlueprint()
-    console.log('API调用成功，收到响应:', response)
-
-    // API成功后，快速完成进度条到100%
-    if (progressTimer) {
-      clearInterval(progressTimer)
-      progressTimer = null
-    }
-
-    // 动画到100%并显示完成状态
-    progress.value = 100
-
-    // 等待一下让用户看到100%完成状态，然后再切换界面
-    await new Promise(resolve => setTimeout(resolve, 800))
-
-    // 清理并重置状态
-    clearTimers()
-    isGenerating.value = false
-
-    // 通知父组件生成完成
-    emit('blueprintGenerated', response)
-
+    await jobs.submit('blueprint', (key, signal) => novelStore.generateBlueprint(key, { signal, resume: resume && !(props.regenerate && !submittedOnce.value) }))
+    submittedOnce.value = true
   } catch (error) {
-    console.error('生成蓝图失败:', error)
-    clearTimers()
-    isGenerating.value = false
-    globalAlert.showError(`生成蓝图失败: ${error instanceof Error ? error.message : '未知错误'}`, '生成失败')
+    globalAlert.showError(errorMessage(error, '提交失败，请重试'), '蓝图生成')
+  } finally {
+    submitting.value = false
   }
 }
-
-const clearTimers = () => {
-  if (progressTimer) {
-    clearInterval(progressTimer)
-    progressTimer = null
-  }
-  if (timeoutTimer) {
-    clearTimeout(timeoutTimer)
-    timeoutTimer = null
-  }
+const cancel = async () => {
+  const job = jobs.activeJobs.value[0]
+  if (!job) return
+  try { await jobs.cancel(job.id) }
+  catch (error) { globalAlert.showError(errorMessage(error, '取消失败'), '取消生成') }
 }
-
-onUnmounted(() => {
-  clearTimers()
-})
 </script>
 
 <style scoped>

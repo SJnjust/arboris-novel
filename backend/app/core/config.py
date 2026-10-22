@@ -83,6 +83,12 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("WRITER_CHAPTER_VERSION_COUNT", "WRITER_CHAPTER_VERSIONS"),
         description="每次生成章节的候选版本数量",
     )
+    ai_job_user_concurrency: int = Field(default=2, ge=1, le=16)
+    ai_job_retention_days: int = Field(default=7, ge=1, le=365)
+    chapter_summary_backfill_limit: int = Field(default=5, ge=0, le=50)
+    llm_deadline_seconds: float = Field(default=600, gt=0, le=600)
+    http_request_deadline_seconds: float = Field(default=90, gt=0, le=95)
+    concept_ping_seconds: float = Field(default=15, gt=0, le=60)
     embedding_provider: str = Field(
         default="openai",
         env="EMBEDDING_PROVIDER",

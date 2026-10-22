@@ -1,3 +1,5 @@
-AIDIR PATH=docs|ROLE=项目文档_架构设计和API说明|BOUND=不含源代码_仅文档|ENTRY=NO_ENTRY|EXPOSE=internal|FIND=架构文档_API文档
-AILIST NAME=architecture.md|K=file|P=架构文档_系统架构设计说明|E=-|A=架构图_模块说明
-AILIST NAME=api.md|K=file|P=API文档_接口使用说明|E=-|A=接口列表_参数说明
+AIDIR PATH=docs|ROLE=项目文档_工作流与部署|BOUND=不含源代码|ENTRY=DEPLOYMENT_GUIDE.md|EXPOSE=internal|FIND=部署:DEPLOYMENT_GUIDE.md_历史:archive
+AILIST NAME=DEPLOYMENT_GUIDE.md|K=file|P=合并部署指南_配置迁移提示词回滚|E=-|A=部署_运维
+AILIST NAME=archive|K=dir|P=历史分析报告与集成设计|E=README.md|A=历史追溯
+AILIST NAME=novel_workflow.md|K=file|P=小说工作流说明|E=-|A=工作流
+AILIST NAME=RAG.md|K=file|P=RAG设计说明|E=-|A=检索

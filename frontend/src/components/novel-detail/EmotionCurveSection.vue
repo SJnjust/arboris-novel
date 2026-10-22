@@ -17,7 +17,7 @@
         <button 
           @click="useAIAnalysis" 
           class="md-btn md-btn-tonal md-ripple"
-          :disabled="isLoading"
+          :disabled="isLoading || emotionJobs.activeJobs.value.length > 0"
         >
           <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
@@ -27,7 +27,7 @@
         <button 
           @click="refreshData" 
           class="md-icon-btn md-ripple"
-          :disabled="isLoading"
+          :disabled="isLoading || emotionJobs.activeJobs.value.length > 0"
         >
           <svg 
             class="w-5 h-5 transition-transform" 
@@ -44,6 +44,7 @@
       </div>
     </div>
 
+    <JobProgress :jobs="emotionJobs.jobs.value" :error="emotionJobs.error.value" @cancel="cancelEmotion" @retry="useAIAnalysis" />
     <!-- Loading State -->
     <div v-if="isLoading" class="flex flex-col items-center justify-center py-12">
       <div class="md-spinner"></div>
@@ -156,6 +157,9 @@ import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import Chart from 'chart.js/auto'
+import JobProgress from '@/components/JobProgress.vue'
+import { useJob } from '@/composables/useJob'
+import { request, errorMessage } from '@/api/novel'
 
 interface EmotionPoint {
   chapter_number: number
@@ -242,66 +246,32 @@ const toggleEmotion = (key: string) => {
   updateChart()
 }
 
+function applyEmotionData(data: EmotionCurveResponse) {
+  emotionPoints.value = data.emotion_points
+  totalChapters.value = data.total_chapters
+  averageIntensity.value = Number(data.average_intensity.toFixed(2))
+  emotionDistribution.value = data.emotion_distribution
+  void nextTick(() => chartInstance ? updateChart() : initChart())
+}
+const emotionJobs = useJob(() => projectId, {
+  kind: 'emotion_analyze',
+  onTerminal(job) {
+    if (job.status === 'succeeded' && job.result) applyEmotionData(job.result as unknown as EmotionCurveResponse)
+  }
+})
+const cancelEmotion = async (id: string) => {
+  try { await emotionJobs.cancel(id) } catch (reason) { error.value = errorMessage(reason) }
+}
 const fetchEmotionData = async (useAI = false) => {
   isLoading.value = true
   error.value = null
-  
   try {
-    const endpoint = useAI 
-      ? `/api/analytics/${projectId}/analyze-emotion-ai`
-      : `/api/analytics/${projectId}/emotion-curve`
-    
-    const method = useAI ? 'POST' : 'GET'
-    
-    const response = await fetch(endpoint, {
-      method,
-      headers: {
-        'Authorization': `Bearer ${authStore.token}`,
-        'Content-Type': 'application/json'
-      }
-    })
-    
-    if (!response.ok) {
-      let errorMessage = '获取情感数据失败'
-      try {
-        const errorData = await response.json()
-        // 处理422错误（参数校验失败）
-        if (response.status === 422 && errorData.detail) {
-          if (Array.isArray(errorData.detail)) {
-            errorMessage = errorData.detail.map((d: any) => d.msg).join('; ')
-          } else if (typeof errorData.detail === 'string') {
-            errorMessage = errorData.detail
-          }
-        } else if (errorData.detail) {
-          errorMessage = errorData.detail
-        }
-      } catch (e) {
-        console.error('Error parsing error response:', e)
-      }
-      throw new Error(errorMessage)
-    }
-    
-    const data: EmotionCurveResponse = await response.json()
-    emotionPoints.value = data.emotion_points
-    totalChapters.value = data.total_chapters
-    averageIntensity.value = parseFloat(data.average_intensity.toFixed(2))
-    emotionDistribution.value = data.emotion_distribution
-
-    // 确保在数据加载后更新图表
-    nextTick(() => {
-      if (chartInstance) {
-        updateChart();
-      } else {
-        initChart();
-      }
-    });
-
-  } catch (err: any) {
-    error.value = err.message || '加载情感数据时发生错误'
-    console.error('Failed to fetch emotion data:', err)
-  } finally {
-    isLoading.value = false
-  }
+    if (useAI) await emotionJobs.submit('project', (key, signal) => request(`/api/analytics/${projectId}/analyze-emotion-ai`, {
+      method: 'POST', headers: { 'Idempotency-Key': key }, signal,
+    }))
+    else applyEmotionData(await request(`/api/analytics/${projectId}/emotion-curve`))
+  } catch (reason) { error.value = errorMessage(reason, '加载情感数据失败，请重试') }
+  finally { isLoading.value = false }
 }
 
 const updateChart = () => {

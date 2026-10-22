@@ -3,3 +3,4 @@ AILIST NAME=__init__.py|K=file|P=工具包初始化_导出工具函数|E=-|A=-
 AILIST NAME=emotion_analyzer.py|K=file|P=情感分析器_基础情感识别|E=EmotionAnalyzer|A=关键词匹配_情感评分
 AILIST NAME=json_utils.py|K=file|P=JSON工具_JSON解析和修复|E=parse_json_safely|A=安全解析_格式修复
 AILIST NAME=llm_tool.py|K=file|P=LLM工具_大模型调用辅助|E=LLMTool|A=请求构建_响应解析
+AILIST NAME=concept_stream.py|K=file|P=流式JSON字段抽取|E=MessageDeltas|A=ai_message增量_转义_Unicode

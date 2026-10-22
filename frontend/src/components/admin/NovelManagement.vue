@@ -75,6 +75,7 @@
 </template>
 
 <script setup lang="ts">
+import { errorMessage } from '@/utils/errors'
 import { h, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
@@ -204,7 +205,7 @@ const fetchNovels = async () => {
   try {
     novels.value = await AdminAPI.listNovels()
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '获取小说数据失败'
+    error.value = errorMessage(e, '获取小说数据失败')
   } finally {
     loading.value = false
   }

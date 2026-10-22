@@ -79,6 +79,7 @@
 </template>
 
 <script setup lang="ts">
+import { errorMessage } from '@/utils/errors'
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
@@ -172,7 +173,7 @@ const sendCode = async () => {
       if (countdown.value <= 0) clearInterval(timer);
     }, 1000);
   } catch (err: any) {
-    error.value = err.message;
+    error.value = errorMessage(err);
   } finally {
     sending.value = false;
   }
@@ -213,7 +214,7 @@ const handleRegister = async () => {
       router.push('/login');
     }, 2000);
   } catch (err: any) {
-    error.value = err.message || '注册失败，请稍后再试。';
+    error.value = errorMessage(err, '注册失败，请稍后再试。');
     console.error(err);
   }
 };

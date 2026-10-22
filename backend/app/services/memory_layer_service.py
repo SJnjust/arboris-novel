@@ -3,6 +3,7 @@
 
 提供角色状态追踪、时间线管理、因果链维护的核心功能。
 """
+from ..utils.json_utils import parse_llm_json
 from typing import Optional, List, Dict, Any
 import json
 import logging
@@ -181,12 +182,8 @@ class MemoryLayerService:
             )
             
             # 解析 JSON
-            content = response
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                result = json.loads(content[json_start:json_end])
-                return result.get("character_states", [])
+            result = parse_llm_json(response, allow_lossy=False)
+            return result.get("character_states", [])
         except Exception as e:
             logger.warning(f"提取角色状态失败: {e}")
         
@@ -286,12 +283,8 @@ class MemoryLayerService:
                 timeout=120.0
             )
             
-            content = response
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                result = json.loads(content[json_start:json_end])
-                return result.get("events", [])
+            result = parse_llm_json(response, allow_lossy=False)
+            return result.get("events", [])
         except Exception as e:
             logger.warning(f"提取时间线事件失败: {e}")
         
@@ -566,11 +559,7 @@ class MemoryLayerService:
                 timeout=120.0
             )
             
-            content = response
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                return json.loads(content[json_start:json_end])
+            return parse_llm_json(response, allow_lossy=False)
         except Exception as e:
             logger.warning(f"一致性检查失败: {e}")
         

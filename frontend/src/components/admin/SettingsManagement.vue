@@ -93,6 +93,7 @@
 </template>
 
 <script setup lang="ts">
+import { errorMessage } from '@/utils/errors'
 import { computed, h, onMounted, reactive, ref } from 'vue'
 import {
   NAlert,
@@ -150,7 +151,7 @@ const fetchDailyLimit = async () => {
     const result = await AdminAPI.getDailyRequestLimit()
     dailyLimit.value = result.limit
   } catch (err) {
-    dailyLimitError.value = err instanceof Error ? err.message : '加载每日限制失败'
+    dailyLimitError.value = errorMessage(err, '加载每日限制失败')
   } finally {
     dailyLimitLoading.value = false
   }
@@ -166,7 +167,7 @@ const saveDailyLimit = async () => {
     await AdminAPI.setDailyRequestLimit(dailyLimit.value)
     showAlert('每日额度已更新', 'success')
   } catch (err) {
-    showAlert(err instanceof Error ? err.message : '保存失败', 'error')
+    showAlert(errorMessage(err, '保存失败'), 'error')
   } finally {
     dailyLimitSaving.value = false
   }
@@ -178,7 +179,7 @@ const fetchConfigs = async () => {
   try {
     configs.value = await AdminAPI.listSystemConfigs()
   } catch (err) {
-    configError.value = err instanceof Error ? err.message : '加载配置失败'
+    configError.value = errorMessage(err, '加载配置失败')
   } finally {
     configLoading.value = false
   }
@@ -232,7 +233,7 @@ const submitConfig = async () => {
     showAlert('配置已保存', 'success')
     closeConfigModal()
   } catch (err) {
-    showAlert(err instanceof Error ? err.message : '保存失败', 'error')
+    showAlert(errorMessage(err, '保存失败'), 'error')
   } finally {
     configSaving.value = false
   }
@@ -244,7 +245,7 @@ const deleteConfig = async (key: string) => {
     configs.value = configs.value.filter((item) => item.key !== key)
     showAlert('配置已删除', 'success')
   } catch (err) {
-    showAlert(err instanceof Error ? err.message : '删除失败', 'error')
+    showAlert(errorMessage(err, '删除失败'), 'error')
   }
 }
 

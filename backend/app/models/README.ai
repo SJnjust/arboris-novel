@@ -13,3 +13,4 @@ AILIST NAME=user_daily_request.py|K=file|P=用户日请求模型_每日请求限
 AILIST NAME=memory_layer.py|K=file|P=记忆层模型_角色状态和时间线|E=CharacterState_TimelineEvent_CausalChain|A=角色状态表_时间线表_因果链表
 AILIST NAME=project_memory.py|K=file|P=项目记忆模型_全局摘要和剧情线追踪|E=ProjectMemory_ChapterSnapshot|A=项目记忆表_章节快照表
 AILIST NAME=chapter_blueprint.py|K=file|P=章节蓝图模型_节奏和伏笔元数据|E=ChapterBlueprint_BlueprintTemplate|A=章节蓝图表_蓝图模板表
+AILIST NAME=ai_job.py|K=file|P=AI后台任务持久化模型|E=AIJob|A=状态_幂等_进度_心跳

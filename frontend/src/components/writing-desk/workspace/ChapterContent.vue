@@ -1,6 +1,7 @@
 <!-- AIMETA P=章节内容_章节文本展示编辑|R=内容展示_编辑|NR=不含版本管理|E=component:ChapterContent|X=internal|A=内容组件|D=vue|S=dom|RD=./README.ai -->
 <template>
   <div class="space-y-6">
+    <JobProgress :jobs="optimizeJobs.jobs.value" :error="optimizeJobs.error.value" @cancel="cancelOptimize" @retry="retryOptimize" />
     <div class="md-card md-card-filled p-4 mb-6" style="border-radius: var(--md-radius-lg); background-color: var(--md-success-container);">
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-2" style="color: var(--md-on-success-container);">
@@ -25,9 +26,9 @@
     </div>
 
     <div class="md-card md-card-outlined p-6" style="border-radius: var(--md-radius-xl);">
-      <div class="flex items-center justify-between mb-4 gap-3">
+      <div class="flex flex-wrap items-center justify-between mb-4 gap-3">
         <h4 class="md-title-medium font-semibold">章节内容</h4>
-        <div class="flex items-center gap-3">
+        <div class="flex flex-wrap items-center gap-3">
           <div class="md-body-small md-on-surface-variant">
             约 {{ Math.round(cleanVersionContent(selectedChapter.content || '').length / 100) * 100 }} 字
           </div>
@@ -197,9 +198,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { errorMessage } from '@/utils/errors'
+import { ref, computed } from 'vue'
 import { globalAlert } from '@/composables/useAlert'
 import type { Chapter } from '@/api/novel'
+import JobProgress from '@/components/JobProgress.vue'
+import { useJob } from '@/composables/useJob'
 import { OptimizerAPI } from '@/api/novel'
 
 interface Props {
@@ -216,7 +220,21 @@ const showOptimizer = ref(false)
 const showOptimizeResult = ref(false)
 const selectedDimension = ref<string>('')
 const additionalNotes = ref('')
-const isOptimizing = ref(false)
+const submitting = ref(false)
+const optimizeJobs = useJob(() => props.projectId, {
+  kind: 'chapter_optimize',
+  onTerminal(job) {
+    if (job.status === 'succeeded' && job.result?.optimized_content && job.payload.chapter_number === props.selectedChapter.chapter_number) {
+      optimizedContent.value = job.result.optimized_content
+      optimizeResultNotes.value = job.result.optimization_notes || '优化完成'
+      showOptimizeResult.value = true
+    }
+  }
+})
+const isOptimizing = computed(() => submitting.value || optimizeJobs.activeJobs.value.length > 0)
+const cancelOptimize = async (id: string) => {
+  try { await optimizeJobs.cancel(id) } catch (error) { globalAlert.showError(error, '取消失败') }
+}
 const isApplying = ref(false)
 const optimizedContent = ref('')
 const optimizeResultNotes = ref('')
@@ -315,26 +333,27 @@ const startOptimize = async () => {
     return
   }
 
-  isOptimizing.value = true
+  if (isOptimizing.value) return
+  submitting.value = true
   showOptimizer.value = false
-
   try {
-    const result = await OptimizerAPI.optimizeChapter({
-      project_id: props.projectId,
-      chapter_number: props.selectedChapter.chapter_number,
+    await optimizeJobs.submit(String(props.selectedChapter.chapter_number), (key, signal) => OptimizerAPI.optimizeChapter({
+      project_id: props.projectId!, chapter_number: props.selectedChapter.chapter_number,
       dimension: selectedDimension.value as 'dialogue' | 'environment' | 'psychology' | 'rhythm',
       additional_notes: additionalNotes.value || undefined
-    })
+    }, key, { signal }))
+  } catch (error) { globalAlert.showError(error, '优化提交失败') }
+  finally { submitting.value = false }
+}
 
-    optimizedContent.value = result.optimized_content
-    optimizeResultNotes.value = result.optimization_notes
-    showOptimizeResult.value = true
-  } catch (error: any) {
-    console.error('优化失败:', error)
-    globalAlert.showError(error.message || '优化失败，请稍后重试')
-  } finally {
-    isOptimizing.value = false
+const retryOptimize = async (job: import('@/api/novel').AIJob) => {
+  selectedDimension.value = job.payload.dimension || 'dialogue'
+  additionalNotes.value = job.payload.additional_notes || ''
+  if (job.payload.chapter_number !== props.selectedChapter.chapter_number) {
+    globalAlert.showError('请先切换到对应章节后重试')
+    return
   }
+  await startOptimize()
 }
 
 const applyOptimization = async () => {
@@ -362,7 +381,7 @@ const applyOptimization = async () => {
     window.location.reload()
   } catch (error: any) {
     console.error('应用优化失败:', error)
-    globalAlert.showError(error.message || '应用优化失败，请稍后重试')
+    globalAlert.showError(errorMessage(error, '应用优化失败，请稍后重试'))
   } finally {
     isApplying.value = false
   }

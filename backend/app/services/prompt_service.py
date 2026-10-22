@@ -62,7 +62,7 @@ class PromptService:
         tags = data.get("tags")
         if tags is not None:
             data["tags"] = ",".join(tags)
-        prompt = Prompt(**data)
+        prompt = Prompt(**data, is_customized=True)
         await self.repo.add(prompt)
         await self.session.commit()
         prompt_read = PromptRead.model_validate(prompt)
@@ -77,6 +77,7 @@ class PromptService:
         if not instance:
             return None
         update_data = payload.model_dump(exclude_unset=True)
+        update_data["is_customized"] = True
         if "tags" in update_data and update_data["tags"] is not None:
             update_data["tags"] = ",".join(update_data["tags"])
         await self.repo.update_fields(instance, **update_data)

@@ -103,6 +103,7 @@
 </template>
 
 <script setup lang="ts">
+import { errorMessage } from '@/utils/errors'
 import { computed, h, onMounted, reactive, ref } from 'vue'
 import {
   NAlert,
@@ -285,7 +286,7 @@ const fetchUsers = async () => {
   try {
     users.value = await AdminAPI.listUsers()
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '获取用户数据失败'
+    error.value = errorMessage(err, '获取用户数据失败')
   } finally {
     loading.value = false
   }
@@ -325,7 +326,7 @@ const handleDelete = async (id: number) => {
     message.success('删除成功')
     await fetchUsers()
   } catch (err) {
-    message.error(err instanceof Error ? err.message : '删除失败')
+    message.error(errorMessage(err, '删除失败'))
   }
 }
 
@@ -361,7 +362,7 @@ const handleSubmit = () => {
       showModal.value = false
       await fetchUsers()
     } catch (err) {
-      message.error(err instanceof Error ? err.message : '操作失败')
+      message.error(errorMessage(err, '操作失败'))
     } finally {
       submitting.value = false
     }

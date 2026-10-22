@@ -2,6 +2,7 @@
 from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy import event
 from sqlalchemy.pool import NullPool
 
 from ..core.config import settings
@@ -12,7 +13,7 @@ if settings.is_sqlite_backend:
     # SQLite 场景下禁用连接池并放宽线程检查，避免多协程读写冲突
     engine_kwargs.update(
         pool_pre_ping=False,
-        connect_args={"check_same_thread": False},
+        connect_args={"check_same_thread": False, "timeout": 30},
         poolclass=NullPool,
     )
 else:
@@ -20,6 +21,24 @@ else:
     engine_kwargs.update(pool_pre_ping=True, pool_recycle=3600)
 
 engine = create_async_engine(settings.sqlalchemy_database_uri, **engine_kwargs)
+
+
+def configure_sqlite(engine):
+    """每条连接设置等待上限；WAL 允许任务状态与正文并行读取。"""
+    if engine.dialect.name != "sqlite":
+        return
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def sqlite_pragmas(connection, _):
+        cursor = connection.cursor()
+        try:
+            cursor.execute("PRAGMA busy_timeout=30000")
+            cursor.execute("PRAGMA journal_mode=WAL")
+        finally:
+            cursor.close()
+
+
+configure_sqlite(engine)
 
 # 统一的 Session 工厂，禁用 expire_on_commit 方便返回模型对象
 AsyncSessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False)

@@ -4,7 +4,6 @@ AILIST NAME=frontend|K=dir|P=Vue3前端应用_提供用户界面和交互|E=-|A=
 AILIST NAME=deploy|K=dir|P=部署配置文件_Docker和Nginx配置|E=-|A=-
 AILIST NAME=docs|K=dir|P=项目文档_架构设计和API说明|E=-|A=-
 AILIST NAME=README.md|K=file|P=项目说明文档_功能介绍和使用指南|E=-|A=-
-AILIST NAME=INTEGRATION_REPORT.md|K=file|P=集成报告_系统集成状态和测试结果|E=-|A=-
-AILIST NAME=integration_design.md|K=file|P=集成设计文档_模块集成方案|E=-|A=-
 AILIST NAME=.gitignore|K=file|P=Git忽略配置_排除临时文件和依赖|E=-|A=-
 AILIST NAME=.dockerignore|K=file|P=Docker忽略配置_排除构建无关文件|E=-|A=-
+AILIST NAME=Makefile|K=file|P=开发验证入口_后端测试和前端检查|E=make_test_make_check|A=pytest_type-check_build

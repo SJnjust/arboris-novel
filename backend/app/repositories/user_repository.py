@@ -3,6 +3,8 @@ from datetime import date
 from typing import Iterable, Optional
 
 from sqlalchemy import func, select, update
+from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .base import BaseRepository
@@ -31,21 +33,22 @@ class UserRepository(BaseRepository[User]):
         result = await self.session.execute(select(User))
         return result.scalars().all()
 
-    async def increment_daily_request(self, user_id: int) -> None:
-        today = date.today()
-        stmt = select(UserDailyRequest).where(
-            UserDailyRequest.user_id == user_id,
-            UserDailyRequest.request_date == today,
-        )
-        result = await self.session.execute(stmt)
-        record = result.scalars().first()
-
-        if record is None:
-            record = UserDailyRequest(user_id=user_id, request_date=today, request_count=1)
-            self.session.add(record)
+    async def reserve_daily_request(self, user_id: int, limit: int, day: date) -> bool:
+        """先确保计数行存在，再原子检查并预留一次；调用方提交事务。"""
+        values = {"user_id": user_id, "request_date": day, "request_count": 0}
+        dialect = self.session.get_bind().dialect.name
+        if dialect == "sqlite":
+            statement = sqlite_insert(UserDailyRequest).values(**values).on_conflict_do_nothing(index_elements=["user_id", "request_date"])
+        elif dialect == "mysql":
+            statement = mysql_insert(UserDailyRequest).values(**values).prefix_with("IGNORE")
         else:
-            record.request_count += 1
-        await self.session.flush()
+            raise RuntimeError("每日配额仅支持已配置的 SQLite/MySQL")
+        await self.session.execute(statement)
+        result = await self.session.execute(update(UserDailyRequest).where(
+            UserDailyRequest.user_id == user_id, UserDailyRequest.request_date == day,
+            UserDailyRequest.request_count < limit,
+        ).values(request_count=UserDailyRequest.request_count + 1))
+        return result.rowcount > 0
 
     async def get_daily_request(self, user_id: int) -> int:
         today = date.today()

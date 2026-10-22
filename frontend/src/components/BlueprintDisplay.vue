@@ -10,6 +10,8 @@
 
     <div class="prose max-w-none p-6 bg-gray-50 rounded-lg border border-gray-200" v-html="formattedBlueprint"></div>
 
+    <VolumePlanning v-if="blueprint" :blueprint="blueprint" :project-id="novelStore.currentProject?.id" :chapters="novelStore.currentProject?.chapters" editable @updated="volumeUpdated" />
+
     <!-- 加载状态 -->
     <div v-if="isSaving" class="text-center py-8">
       <!-- 保存动画 -->
@@ -68,7 +70,9 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { globalAlert } from '@/composables/useAlert'
-import type { Blueprint } from '@/api/novel'
+import type { Blueprint, NovelProject } from '@/api/novel'
+import VolumePlanning from '@/components/VolumePlanning.vue'
+import { useNovelStore } from '@/stores/novel'
 
 interface DisplayField {
   label: string;
@@ -88,12 +92,18 @@ const props = defineProps<Props>()
 const emit = defineEmits<{
   confirm: []
   regenerate: []
+  'update:blueprint': [blueprint: Blueprint]
 }>()
 
+const novelStore = useNovelStore()
+const volumeUpdated = (project: NovelProject) => {
+  novelStore.setCurrentProject(project)
+  if (project.blueprint) emit('update:blueprint', project.blueprint)
+}
 const isSaving = ref(false)
 
 const confirmRegenerate = async () => {
-  const confirmed = await globalAlert.showConfirm('重新生成会覆盖当前蓝图，确定继续吗？', '重新生成确认')
+  const confirmed = await globalAlert.showConfirm(`重新生成会替换设定和第 1–${Math.max(props.blueprint?.total_chapters || 0, ...(props.blueprint?.chapter_outline || []).map(row => row.chapter_number))} 章中未写正文的大纲及卷规划；已有正文和对应大纲保留。确定继续吗？`, '重新生成确认')
   if (confirmed) {
     emit('regenerate')
   }

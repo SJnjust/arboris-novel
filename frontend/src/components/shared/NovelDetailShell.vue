@@ -8,7 +8,7 @@
         <button
           class="md-icon-btn lg:hidden mr-2"
           @click="toggleSidebar"
-          aria-label="Toggle sidebar"
+          aria-label="打开或关闭蓝图导航"
         >
           <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" />
@@ -20,7 +20,7 @@
           <h1 class="md-title-large truncate" style="color: var(--md-on-surface);">
             {{ formattedTitle }}
           </h1>
-          <p v-if="overviewMeta.updated_at" class="md-body-small" style="color: var(--md-on-surface-variant);">
+          <p v-if="overviewMeta.updated_at" class="md-body-small truncate" style="color: var(--md-on-surface-variant);">
             最近更新：{{ formatDateTime(overviewMeta.updated_at) }}
           </p>
         </div>
@@ -153,6 +153,7 @@
                 :class="componentContainerClass"
                 @edit="handleSectionEdit"
                 @add="startAddChapter"
+                @updated="reloadSection('chapter_outline', true)"
               />
             </div>
           </div>
@@ -233,6 +234,9 @@
 </template>
 
 <script setup lang="ts">
+import { errorMessage } from '@/utils/errors'
+import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
+import { globalAlert } from '@/composables/useAlert'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, h } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useNovelStore } from '@/stores/novel'
@@ -372,6 +376,8 @@ const modalField = ref('')
 const isAddChapterModalOpen = ref(false)
 const newChapterTitle = ref('')
 const newChapterSummary = ref('')
+const newChapterOriginalTitle = ref('')
+const newChapterGuard = useUnsavedChanges(() => isAddChapterModalOpen.value && (newChapterTitle.value !== newChapterOriginalTitle.value || !!newChapterSummary.value))
 const originalBodyOverflow = ref('')
 
 const novel = computed(() => !props.isAdmin ? novelStore.currentProject as NovelProject | null : null)
@@ -437,7 +443,7 @@ const loadSection = async (section: SectionKey, force = false) => {
     }
   } catch (error) {
     console.error('加载模块失败:', error)
-    sectionError[section] = error instanceof Error ? error.message : '加载失败'
+    sectionError[section] = errorMessage(error, '加载失败')
   } finally {
     sectionLoading[section] = false
   }
@@ -483,7 +489,7 @@ const componentProps = computed(() => {
     case 'relationships':
       return { data: data || null, editable }
     case 'chapter_outline':
-      return { outline: data?.chapter_outline || [], editable }
+      return { outline: data?.chapter_outline || [], volumes: data?.volumes || [], totalChapters: data?.total_chapters || 0, projectId, editable }
     case 'chapters':
       return { chapters: data?.chapters || [], isAdmin: props.isAdmin }
     default:
@@ -537,6 +543,7 @@ const handleSave = async (data: { field: string; content: any }) => {
     isModalOpen.value = false
   } catch (error) {
     console.error('保存变更失败:', error)
+    globalAlert.showError(error, '保存失败')
   }
 }
 
@@ -545,12 +552,13 @@ const startAddChapter = async () => {
   await ensureProjectLoaded()
   const outline = sectionData.chapter_outline?.chapter_outline || novel.value?.blueprint?.chapter_outline || []
   const nextNumber = outline.length > 0 ? Math.max(...outline.map((item: any) => item.chapter_number)) + 1 : 1
-  newChapterTitle.value = `新章节 ${nextNumber}`
+  newChapterTitle.value = newChapterOriginalTitle.value = `新章节 ${nextNumber}`
   newChapterSummary.value = ''
   isAddChapterModalOpen.value = true
 }
 
-const cancelNewChapter = () => {
+const cancelNewChapter = async () => {
+  if (!await newChapterGuard.confirmLeave()) return
   isAddChapterModalOpen.value = false
 }
 
@@ -560,7 +568,7 @@ const saveNewChapter = async () => {
   const project = novel.value
   if (!project) return
   if (!newChapterTitle.value.trim()) {
-    alert('章节标题不能为空')
+    globalAlert.showError('章节标题不能为空')
     return
   }
 
@@ -579,6 +587,7 @@ const saveNewChapter = async () => {
     isAddChapterModalOpen.value = false
   } catch (error) {
     console.error('新增章节失败:', error)
+    globalAlert.showError(error, '新增失败')
   }
 }
 

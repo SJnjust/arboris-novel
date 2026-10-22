@@ -48,6 +48,7 @@
 </template>
 
 <script setup lang="ts">
+import { errorMessage } from '@/utils/errors'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   NAlert,
@@ -79,7 +80,7 @@ const fetchStats = async () => {
   try {
     stats.value = await AdminAPI.getStatistics()
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '获取统计数据失败'
+    error.value = errorMessage(err, '获取统计数据失败')
   } finally {
     loading.value = false
   }

@@ -10,6 +10,7 @@
 
 这些元数据用于指导 L2 Director 生成章节任务，实现"慢节奏 + 跨章起承转合"。
 """
+from ..utils.json_utils import parse_llm_json
 import logging
 from typing import Optional, Dict, Any, List
 import json
@@ -504,12 +505,7 @@ class BlueprintService:
     def _parse_json_response(self, response: str) -> Any:
         """解析JSON响应"""
         try:
-            response = response.strip()
-            if response.startswith("```"):
-                response = response.split("```")[1]
-                if response.startswith("json"):
-                    response = response[4:]
-            return json.loads(response)
+            return parse_llm_json(response, allow_lossy=False)
         except json.JSONDecodeError as e:
             logger.error(f"JSON解析失败: {e}")
             return None

@@ -35,6 +35,7 @@ class ConverseRequest(BaseModel):
 
     user_input: Dict[str, Any]
     conversation_state: Dict[str, Any]
+    client_msg_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
 
 
 class ChapterGenerationStatus(str, Enum):
@@ -52,6 +53,30 @@ class ChapterOutline(BaseModel):
     chapter_number: int
     title: str
     summary: str
+    volume_number: Optional[int] = None
+
+
+class Volume(BaseModel):
+    volume_number: int = Field(ge=1, le=500)
+    title: str = Field(min_length=1, max_length=255)
+    summary: str = Field(default="", max_length=10000)
+    start_chapter: int = Field(ge=1)
+    end_chapter: int = Field(ge=1)
+    status: str = "planned"
+    outline_cursor: int = 0
+    plan: Dict[str, Any] = Field(default_factory=dict)
+    is_virtual: bool = False
+
+
+class VolumePatch(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    summary: Optional[str] = Field(default=None, max_length=10000)
+    start_chapter: Optional[int] = Field(default=None, ge=1, le=10000)
+    end_chapter: Optional[int] = Field(default=None, ge=1, le=10000)
+
+
+class BlueprintGenerateRequest(BaseModel):
+    resume: bool = True
 
 
 class Chapter(ChapterOutline):
@@ -80,6 +105,8 @@ class Blueprint(BaseModel):
     characters: List[Dict[str, Any]] = []
     relationships: List[Relationship] = []
     chapter_outline: List[ChapterOutline] = []
+    volumes: List[Volume] = Field(default_factory=list)
+    total_chapters: int = Field(default=0, ge=0)
     
     class Config:
         from_attributes = True
@@ -136,55 +163,6 @@ class GenerateChapterRequest(BaseModel):
     writing_notes: Optional[str] = Field(default=None, description="章节额外写作指令")
 
 
-class FlowConfig(BaseModel):
-    preset: str = Field(default="basic", description="basic|enhanced|ultimate|custom")
-    versions: Optional[int] = Field(default=None, description="生成版本数量")
-    enable_preview: Optional[bool] = Field(default=None, description="是否启用预演生成")
-    enable_optimizer: Optional[bool] = Field(default=None, description="是否启用优化器")
-    enable_consistency: Optional[bool] = Field(default=None, description="是否启用一致性检查")
-    enable_enrichment: Optional[bool] = Field(default=None, description="是否启用字数扩写")
-    async_finalize: Optional[bool] = Field(default=None, description="是否异步定稿")
-    enable_rag: Optional[bool] = Field(default=None, description="是否启用 RAG")
-    rag_mode: Optional[str] = Field(default=None, description="simple|two_stage")
-
-
-class AdvancedGenerateRequest(BaseModel):
-    project_id: str
-    chapter_number: int
-    writing_notes: Optional[str] = Field(default=None, description="章节额外写作指令")
-    flow_config: FlowConfig = Field(default_factory=FlowConfig)
-
-
-class AdvancedGenerateVariant(BaseModel):
-    index: int
-    version_id: int
-    content: str
-    metadata: Optional[Dict[str, Any]] = None
-
-
-class AdvancedGenerateResponse(BaseModel):
-    project_id: str
-    chapter_number: int
-    preset: str
-    best_version_index: int
-    variants: List[AdvancedGenerateVariant]
-    review_summaries: Dict[str, Any] = Field(default_factory=dict)
-    debug_metadata: Optional[Dict[str, Any]] = None
-
-
-class FinalizeChapterRequest(BaseModel):
-    project_id: str
-    selected_version_id: int
-    skip_vector_update: Optional[bool] = Field(default=False, description="是否跳过向量库更新")
-
-
-class FinalizeChapterResponse(BaseModel):
-    project_id: str
-    chapter_number: int
-    selected_version_id: int
-    result: Dict[str, Any]
-
-
 class SelectVersionRequest(BaseModel):
     chapter_number: int
     version_index: int
@@ -205,8 +183,8 @@ class DeleteChapterRequest(BaseModel):
 
 
 class GenerateOutlineRequest(BaseModel):
-    start_chapter: int
-    num_chapters: int
+    start_chapter: int = Field(ge=1, le=10000)
+    num_chapters: int = Field(ge=1, le=15)
 
 
 class BlueprintPatch(BaseModel):

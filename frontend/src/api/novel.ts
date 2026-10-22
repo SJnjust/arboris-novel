@@ -8,12 +8,32 @@ export const API_BASE_URL = import.meta.env.MODE === 'production' ? '' : 'http:/
 export const API_PREFIX = '/api'
 
 // 统一的请求处理函数
-const request = async (url: string, options: RequestInit = {}) => {
+export type RequestOptions = RequestInit & { timeoutMs?: number | null }
+
+import { formatApiDetail } from '@/utils/errors'
+export { formatApiDetail, redactSensitiveText, errorMessage } from '@/utils/errors'
+
+export class ApiError extends Error {
+  constructor(message: string, public status: number, public detail: unknown) {
+    super(message)
+  }
+
+  get jobId(): string | undefined {
+    return this.detail && typeof this.detail === 'object' && 'job_id' in this.detail ? String(this.detail.job_id) : undefined
+  }
+}
+
+export const request = async (url: string, options: RequestOptions = {}, readResponse: (response: Response, signal: AbortSignal) => Promise<any> = response => response.json()) => {
+  const { timeoutMs = 30000, signal, ...init } = options
+  const controller = new AbortController()
+  const abort = () => controller.abort(signal?.reason)
+  if (signal?.aborted) abort()
+  else signal?.addEventListener('abort', abort, { once: true })
+  let timedOut = false
+  const timer = timeoutMs === null ? undefined : setTimeout(() => { timedOut = true; controller.abort() }, timeoutMs)
   const authStore = useAuthStore()
-  const headers = new Headers({
-    'Content-Type': 'application/json',
-    ...options.headers
-  })
+  const headers = new Headers(options.headers)
+  if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
 
   // 如果 body 是 FormData，删除 Content-Type header，让浏览器自动设置（包含 boundary）
   if (options.body instanceof FormData) {
@@ -24,21 +44,103 @@ const request = async (url: string, options: RequestInit = {}) => {
     headers.set('Authorization', `Bearer ${authStore.token}`)
   }
 
-  const response = await fetch(url, { ...options, headers })
+  try {
+    const response = await fetch(url, { ...init, headers, signal: controller.signal })
 
-  if (response.status === 401) {
-    // Token 失效或未授权
-    authStore.logout()
-    router.push('/login')
-    throw new Error('会话已过期，请重新登录')
+    if (response.status === 401) {
+      // Token 失效或未授权
+      authStore.logout()
+      router.push('/login')
+      throw new Error('会话已过期，请重新登录')
+    }
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      throw new ApiError(errorData.detail ? formatApiDetail(errorData.detail) : `请求失败，状态码: ${response.status}`, response.status, errorData.detail)
+    }
+
+    return await readResponse(response, controller.signal)
+  } catch (error) {
+    if (timedOut) throw new Error('请求超时，请重试')
+    throw error
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+    signal?.removeEventListener('abort', abort)
   }
+}
 
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}))
-    throw new Error(errorData.detail || `请求失败，状态码: ${response.status}`)
+export class ConceptStreamError extends Error {
+  constructor(message: string, public retryable = true) { super(message) }
+}
+
+export async function readConceptEvents(response: Response, onDelta: (text: string) => void, signal: AbortSignal): Promise<ConverseResponse> {
+  if (!response.body) throw new ConceptStreamError('未收到对话内容，请重试本轮')
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  const abort = () => { void reader.cancel().catch(() => {}) }
+  signal.addEventListener('abort', abort, { once: true })
+  try {
+    while (true) {
+      if (signal.aborted) throw signal.reason
+      const { done, value } = await reader.read()
+      if (signal.aborted) throw signal.reason
+      buffer += decoder.decode(value, { stream: !done })
+      let boundary: RegExpExecArray | null
+      while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
+        const frame = buffer.slice(0, boundary.index)
+        buffer = buffer.slice(boundary.index + boundary[0].length)
+        let event = 'message'
+        const data: string[] = []
+        for (const line of frame.split(/\r?\n/)) {
+          if (line.startsWith('event:')) event = line.slice(6).trim()
+          if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''))
+        }
+        if (event === 'ping' || !data.length) continue
+        let parsed
+        try { parsed = JSON.parse(data.join('\n')) }
+        catch { throw new ConceptStreamError('对话数据格式不正确，请重试本轮') }
+        if (event === 'delta') {
+          if (typeof parsed.text !== 'string') throw new ConceptStreamError('对话数据格式不正确，请重试本轮')
+          onDelta(parsed.text)
+        } else if (event === 'final') {
+          if (typeof parsed.ai_message !== 'string' || !parsed.ui_control || !parsed.conversation_state) throw new ConceptStreamError('对话数据格式不正确，请重试本轮')
+          return parsed as ConverseResponse
+        } else if (event === 'error') {
+          throw new ConceptStreamError(formatApiDetail(parsed.detail), parsed.retryable !== false)
+        }
+      }
+      if (done) throw new ConceptStreamError('连接已中断，请重试本轮')
+    }
+  } finally {
+    signal.removeEventListener('abort', abort)
+    await reader.cancel().catch(() => {})
+    reader.releaseLock()
   }
+}
 
-  return response.json()
+export interface ConceptStreamOptions {
+  clientMsgId: string
+  onDelta?: (text: string) => void
+  signal?: AbortSignal
+}
+
+export interface JobSubmitted { job_id: string }
+
+export interface AIJob {
+  id: string
+  project_id: string
+  kind: string
+  target: string
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+  stage: string
+  progress: number
+  payload: { start_chapter?: number; num_chapters?: number; dimension?: string; additional_notes?: string; chapter_number?: number; writing_notes?: string; volume_number?: number; resume?: boolean }
+  result: { id?: string; optimized_content?: string; optimization_notes?: string; emotion_points?: any[]; total_chapters?: number; average_intensity?: number; emotion_distribution?: Record<string, number>; version_count?: number; failed_versions?: Array<{ index: number; detail: unknown }>; project_id?: string; completed_volumes?: number[]; volume_count?: number } | null
+  error: { detail: unknown; status_code: number } | null
+  created_at: string
+  updated_at: string
+  heartbeat_at: string
 }
 
 // 类型定义
@@ -72,6 +174,20 @@ export interface Blueprint {
   characters?: Character[]
   relationships?: any[]
   chapter_outline?: ChapterOutline[]
+  volumes?: NovelVolume[]
+  total_chapters?: number
+}
+
+export interface NovelVolume {
+  volume_number: number
+  title: string
+  summary: string
+  start_chapter: number
+  end_chapter: number
+  status: 'planned' | 'outlining' | 'outlined'
+  outline_cursor: number
+  plan?: Record<string, unknown>
+  is_virtual?: boolean
 }
 
 export interface Character {
@@ -88,6 +204,7 @@ export interface ChapterOutline {
   chapter_number: number
   title: string
   summary: string
+  volume_number?: number | null
 }
 
 export interface ChapterVersion {
@@ -99,6 +216,7 @@ export interface Chapter {
   chapter_number: number
   title: string
   summary: string
+  volume_number?: number | null
   content: string | null
   versions: string[] | null  // versions是字符串数组，不是对象数组
   evaluation: string | null
@@ -109,6 +227,7 @@ export interface Chapter {
 export interface ConversationMessage {
   role: 'user' | 'assistant'
   content: string
+  metadata?: { client_msg_id?: string; conversation_state?: Record<string, unknown> } | null
 }
 
 export interface ConverseResponse {
@@ -169,20 +288,20 @@ export class NovelAPI {
     })
   }
 
-  static async importNovel(file: File): Promise<{ id: string }> {
+  static async importNovel(file: File, key: string, options: RequestOptions = {}): Promise<JobSubmitted & { project_id: string }> {
     const formData = new FormData()
     formData.append('file', file)
     return request(`${NOVELS_BASE}/import`, {
+      ...options,
+      timeoutMs: 95000,
       method: 'POST',
       body: formData,
-      headers: {
-        // 让 browser 自动设置 Content-Type 为 multipart/form-data，不手动设置
-      }
+      headers: { 'Idempotency-Key': key }
     })
   }
 
-  static async getNovel(projectId: string): Promise<NovelProject> {
-    return request(`${NOVELS_BASE}/${projectId}`)
+  static async getNovel(projectId: string, options: RequestOptions = {}): Promise<NovelProject> {
+    return request(`${NOVELS_BASE}/${projectId}`, options)
   }
 
   static async getChapter(projectId: string, chapterNumber: number): Promise<Chapter> {
@@ -197,9 +316,10 @@ export class NovelAPI {
     projectId: string,
     userInput: any,
     conversationState: any = {}
-  ): Promise<ConverseResponse> {
+  ): Promise<JobSubmitted> {
     const formattedUserInput = userInput || { id: null, value: null }
     return request(`${NOVELS_BASE}/${projectId}/concept/converse`, {
+      timeoutMs: null,
       method: 'POST',
       body: JSON.stringify({
         user_input: formattedUserInput,
@@ -208,10 +328,41 @@ export class NovelAPI {
     })
   }
 
-  static async generateBlueprint(projectId: string): Promise<BlueprintGenerationResponse> {
+  static async converseConceptStream(projectId: string, userInput: any, conversationState: any, options: ConceptStreamOptions): Promise<ConverseResponse> {
+    return request(`${NOVELS_BASE}/${projectId}/concept/converse/stream`, {
+      method: 'POST', timeoutMs: null, signal: options.signal,
+      headers: { Accept: 'text/event-stream' },
+      body: JSON.stringify({ user_input: userInput || { id: null, value: null }, conversation_state: conversationState, client_msg_id: options.clientMsgId })
+    }, (response, signal) => readConceptEvents(response, options.onDelta || (() => {}), signal))
+  }
+
+  static async generateBlueprint(projectId: string, key?: string, options: RequestOptions & { resume?: boolean } = {}): Promise<JobSubmitted> {
+    const { resume = true, ...requestOptions } = options
     return request(`${NOVELS_BASE}/${projectId}/blueprint/generate`, {
-      method: 'POST'
+      ...requestOptions, method: 'POST',
+      headers: key ? { 'Idempotency-Key': key } : undefined,
+      body: JSON.stringify({ resume })
     })
+  }
+
+  static async getVolumes(projectId: string): Promise<NovelVolume[]> {
+    return request(`${NOVELS_BASE}/${projectId}/volumes`)
+  }
+
+  static async updateVolume(projectId: string, number: number, data: Pick<NovelVolume, 'title' | 'summary' | 'start_chapter' | 'end_chapter'>): Promise<NovelProject> {
+    return request(`${NOVELS_BASE}/${projectId}/volumes/${number}`, { method: 'PATCH', body: JSON.stringify(data) })
+  }
+
+  static async generateVolumeOutline(projectId: string, number: number, key: string, options: RequestOptions = {}): Promise<JobSubmitted> {
+    return request(`${NOVELS_BASE}/${projectId}/volumes/${number}/outline`, { ...options, method: 'POST', headers: { 'Idempotency-Key': key } })
+  }
+
+  static async generateRemainingVolumes(projectId: string, key: string, options: RequestOptions = {}): Promise<JobSubmitted> {
+    return request(`${NOVELS_BASE}/${projectId}/volumes/outline-all`, { ...options, method: 'POST', headers: { 'Idempotency-Key': key } })
+  }
+
+  static async smartSplitVolumes(projectId: string, key: string, options: RequestOptions = {}): Promise<JobSubmitted> {
+    return request(`${NOVELS_BASE}/${projectId}/volumes/smart-split`, { ...options, method: 'POST', headers: { 'Idempotency-Key': key } })
   }
 
   static async saveBlueprint(projectId: string, blueprint: Blueprint): Promise<NovelProject> {
@@ -221,15 +372,31 @@ export class NovelAPI {
     })
   }
 
-  static async generateChapter(projectId: string, chapterNumber: number): Promise<NovelProject> {
+  static async generateChapter(projectId: string, chapterNumber: number, key: string, options: RequestOptions = {}): Promise<JobSubmitted> {
     return request(`${WRITER_BASE}/${projectId}/chapters/generate`, {
+      ...options,
       method: 'POST',
+      headers: { 'Idempotency-Key': key },
       body: JSON.stringify({ chapter_number: chapterNumber })
     })
   }
 
-  static async evaluateChapter(projectId: string, chapterNumber: number): Promise<NovelProject> {
+  static async getJob(jobId: string, options: RequestOptions = {}): Promise<AIJob> {
+    return request(`${API_BASE_URL}/api/jobs/${jobId}`, options)
+  }
+
+  static async getJobs(projectId: string, options: RequestOptions = {}): Promise<AIJob[]> {
+    return request(`${API_BASE_URL}/api/jobs?project_id=${encodeURIComponent(projectId)}&active=1`, options)
+  }
+
+  static async cancelJob(jobId: string, options: RequestOptions = {}): Promise<AIJob> {
+    return request(`${API_BASE_URL}/api/jobs/${jobId}/cancel`, { ...options, method: 'POST' })
+  }
+
+  static async evaluateChapter(projectId: string, chapterNumber: number, key: string, options: RequestOptions = {}): Promise<JobSubmitted> {
     return request(`${WRITER_BASE}/${projectId}/chapters/evaluate`, {
+      ...options,
+      headers: { 'Idempotency-Key': key },
       method: 'POST',
       body: JSON.stringify({ chapter_number: chapterNumber })
     })
@@ -241,6 +408,7 @@ export class NovelAPI {
     versionIndex: number
   ): Promise<NovelProject> {
     return request(`${WRITER_BASE}/${projectId}/chapters/select`, {
+      timeoutMs: null,
       method: 'POST',
       body: JSON.stringify({
         chapter_number: chapterNumber,
@@ -283,9 +451,13 @@ export class NovelAPI {
   static async generateChapterOutline(
     projectId: string,
     startChapter: number,
-    numChapters: number
-  ): Promise<NovelProject> {
+    numChapters: number,
+    key: string,
+    options: RequestOptions = {}
+  ): Promise<JobSubmitted> {
     return request(`${WRITER_BASE}/${projectId}/chapters/outline`, {
+      ...options,
+      headers: { 'Idempotency-Key': key },
       method: 'POST',
       body: JSON.stringify({
         start_chapter: startChapter,
@@ -349,8 +521,10 @@ export class OptimizerAPI {
   /**
    * 对章节内容进行分层优化
    */
-  static async optimizeChapter(optimizeReq: OptimizeRequest): Promise<OptimizeResponse> {
+  static async optimizeChapter(optimizeReq: OptimizeRequest, key: string, options: RequestOptions = {}): Promise<JobSubmitted> {
     return request(`${OPTIMIZER_BASE}/optimize`, {
+      ...options,
+      headers: { 'Idempotency-Key': key },
       method: 'POST',
       body: JSON.stringify(optimizeReq)
     })

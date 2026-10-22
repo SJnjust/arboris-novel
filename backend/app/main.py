@@ -11,7 +11,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from .core.config import settings
 from .db.init_db import init_db
 from .services.prompt_service import PromptService
-from .db.session import AsyncSessionLocal
+from .db.session import AsyncSessionLocal, engine
+from .services.long_operation_service import register_long_operations
+from .services.job_service import JobRunner
+from .services.chapter_generation_service import ChapterGenerationService
+from .services.volume_generation_service import VolumeGenerationService
+from .services.job_service import PLANNING_KINDS
+from .utils.llm_tool import close_openai_clients
 from .api.routers import api_router
 
 
@@ -69,10 +75,20 @@ dictConfig(
 async def lifespan(app: FastAPI):
     # 应用启动时初始化数据库，并预热提示词缓存
     await init_db()
+    await app.state.job_runner.recover()
     async with AsyncSessionLocal() as session:
         prompt_service = PromptService(session)
         await prompt_service.preload()
-    yield
+    try:
+        yield
+    finally:
+        try:
+            await app.state.job_runner.shutdown()
+        finally:
+            try:
+                await close_openai_clients()
+            finally:
+                await engine.dispose()
 
 
 app = FastAPI(
@@ -81,6 +97,16 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+app.state.job_runner = JobRunner(AsyncSessionLocal, user_limit=settings.ai_job_user_concurrency,
+                               retention_days=settings.ai_job_retention_days)
+app.state.job_runner.register("chapter_generate", ChapterGenerationService())
+for kind in PLANNING_KINDS:
+    if kind in ("outline_extend", "novel_import"):
+        continue
+    app.state.job_runner.register(kind, VolumeGenerationService(kind))
+
+register_long_operations(app.state.job_runner)
 
 # CORS 配置，生产环境建议改为具体域名
 app.add_middleware(

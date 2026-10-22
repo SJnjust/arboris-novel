@@ -139,6 +139,7 @@
 </template>
 
 <script setup lang="ts">
+import { errorMessage } from '@/utils/errors'
 import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
   NAlert,
@@ -206,7 +207,7 @@ const fetchPrompts = async () => {
       selectPrompt(prompts.value[0])
     }
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '获取提示词列表失败'
+    error.value = errorMessage(err, '获取提示词列表失败')
   } finally {
     loading.value = false
   }
@@ -248,7 +249,7 @@ const savePrompt = async () => {
     }
     showAlert('保存成功', 'success')
   } catch (err) {
-    showAlert(err instanceof Error ? err.message : '保存失败', 'error')
+    showAlert(errorMessage(err, '保存失败'), 'error')
   } finally {
     saving.value = false
   }
@@ -263,7 +264,7 @@ const deletePrompt = async () => {
     prompts.value = prompts.value.filter((item) => item.id !== selectedPrompt.value?.id)
     resetSelection()
   } catch (err) {
-    showAlert(err instanceof Error ? err.message : '删除失败', 'error')
+    showAlert(errorMessage(err, '删除失败'), 'error')
   } finally {
     deleting.value = false
   }
@@ -299,7 +300,7 @@ const createPrompt = async () => {
     showAlert('创建成功', 'success')
     closeCreateModal()
   } catch (err) {
-    showAlert(err instanceof Error ? err.message : '创建失败', 'error')
+    showAlert(errorMessage(err, '创建失败'), 'error')
   } finally {
     creating.value = false
   }

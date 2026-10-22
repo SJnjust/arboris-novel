@@ -6,7 +6,7 @@
 1. add_chapter_to_store: 将章节内容分块并写入向量库
 2. search: 基于文本查询进行向量检索
 
-这些方法被 FinalizeService 和 KnowledgeRetrievalService 调用。
+这些扩展方法与基础 VectorStoreService 一并保留。
 """
 import logging
 import re

@@ -9,6 +9,7 @@
 5. 风格合规检查
 6. 冲突检测
 """
+from ..utils.json_utils import parse_llm_json
 from typing import Optional, Dict, Any, List
 import json
 
@@ -46,7 +47,8 @@ class SixDimensionReviewService:
         chapter_plan: Optional[str] = None,
         previous_summary: Optional[str] = None,
         character_profiles: Optional[str] = None,
-        world_setting: Optional[str] = None
+        world_setting: Optional[str] = None,
+        user_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """执行六维度审查"""
         
@@ -80,17 +82,14 @@ class SixDimensionReviewService:
         # 调用 LLM 进行审查
         response = await self.llm_service.generate(
             prompt=prompt,
+            user_id=user_id,
             system_prompt="你是一位资深的小说编辑，负责对章节进行全面的六维度审查。请以 JSON 格式输出审查结果。"
         )
         
         # 解析结果
         try:
-            content = response or ""
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                result = json.loads(content[json_start:json_end])
-                return result
+            result = parse_llm_json(response, allow_lossy=False)
+            return result
         except json.JSONDecodeError:
             pass
         
