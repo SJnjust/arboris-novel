@@ -1,10 +1,13 @@
 # AIMETA P=审查API_六维审查与一致性|R=审查接口|NR=不含生成逻辑|E=route:POST_/api/review/*|X=http|A=审查|D=fastapi,sqlalchemy|S=db|RD=./README.ai
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Header, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...core.request_deadline import RequestDeadlineRoute, request_deadline
+from ...schemas.job import JobSubmitted
+from ...services.job_service import JobRunner, get_job_runner
 from ...core.dependencies import get_current_user
 from ...db.session import get_session
 from ...schemas.user import UserInDB
@@ -16,7 +19,7 @@ from ...services.prompt_service import PromptService
 from ...services.six_dimension_review_service import SixDimensionReviewService
 from ...services.writer_persona_service import WriterPersonaService
 
-router = APIRouter(prefix="/api/review", tags=["Review"])
+router = APIRouter(prefix="/api/review", tags=["Review"], route_class=RequestDeadlineRoute)
 
 
 class SixDimensionReviewRequest(BaseModel):
@@ -36,8 +39,7 @@ class ConsistencyReviewRequest(BaseModel):
     include_foreshadowing: bool = True
 
 
-@router.post("/six-dimension")
-async def review_six_dimension(
+async def _execute_review_six_dimension(
     request: SixDimensionReviewRequest,
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
@@ -62,12 +64,12 @@ async def review_six_dimension(
         previous_summary=request.previous_summary,
         character_profiles=request.character_profiles,
         world_setting=request.world_setting,
+        user_id=current_user.id,
     )
     return {"project_id": request.project_id, "review": result}
 
 
-@router.post("/consistency")
-async def review_consistency(
+async def _execute_review_consistency(
     request: ConsistencyReviewRequest,
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
@@ -75,8 +77,7 @@ async def review_consistency(
     novel_service = NovelService(session)
     await novel_service.ensure_project_owner(request.project_id, current_user.id)
 
-    sync_session = getattr(session, "sync_session", session)
-    consistency_service = ConsistencyService(sync_session, LLMService(session))
+    consistency_service = ConsistencyService(session, LLMService(session))
     result = await consistency_service.check_consistency(
         project_id=request.project_id,
         chapter_text=request.chapter_text,
@@ -102,3 +103,35 @@ async def review_consistency(
     }
 
     return {"project_id": request.project_id, "review": report}
+
+
+@router.post("/six-dimension", response_model=JobSubmitted, status_code=202)
+@request_deadline
+async def review_six_dimension(
+    request: SixDimensionReviewRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+    runner: JobRunner = Depends(get_job_runner),
+    idempotency_key: Optional[str] = Header(None, min_length=1, max_length=128),
+) -> JobSubmitted:
+    await NovelService(session).ensure_project_owner(request.project_id, current_user.id)
+    await session.rollback()
+    job = await runner.submit(project_id=request.project_id, user_id=current_user.id, kind="six_dimension_review",
+                              target=str(request.chapter_number), payload=request.model_dump(), idempotency_key=idempotency_key)
+    return JobSubmitted(job_id=job.id)
+
+
+@router.post("/consistency", response_model=JobSubmitted, status_code=202)
+@request_deadline
+async def review_consistency(
+    request: ConsistencyReviewRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+    runner: JobRunner = Depends(get_job_runner),
+    idempotency_key: Optional[str] = Header(None, min_length=1, max_length=128),
+) -> JobSubmitted:
+    await NovelService(session).ensure_project_owner(request.project_id, current_user.id)
+    await session.rollback()
+    job = await runner.submit(project_id=request.project_id, user_id=current_user.id, kind="consistency_review",
+                              target="project", payload=request.model_dump(), idempotency_key=idempotency_key)
+    return JobSubmitted(job_id=job.id)

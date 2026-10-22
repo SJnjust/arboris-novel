@@ -53,17 +53,40 @@ async def create_novel(
     return await novel_service.get_project_schema(project.id, current_user.id)
 
 
-@router.post("/import", response_model=Dict[str, str], status_code=status.HTTP_201_CREATED)
+@router.post("/import", response_model=Dict[str, str], status_code=202)
+@request_deadline
 async def import_novel(
     file: UploadFile,
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
+    runner: JobRunner = Depends(get_job_runner),
+    idempotency_key: str | None = Header(None, min_length=1, max_length=128),
 ) -> Dict[str, str]:
-    """上传并导入小说文件。"""
-    import_service = ImportService(session)
-    project_id = await import_service.import_novel_from_file(current_user.id, file)
-    logger.info("用户 %s 导入项目 %s", current_user.id, project_id)
-    return {"id": project_id}
+    """上传后立即提交分析任务；上传正文只在任务运行期间保留。"""
+    if idempotency_key:
+        original = await session.scalar(select(AIJob).where(
+            AIJob.user_id == current_user.id, AIJob.idempotency_key == idempotency_key,
+        ))
+        if original:
+            return {"job_id": original.id, "project_id": original.project_id}
+    if not file.filename or not file.filename.lower().endswith(".txt"):
+        raise HTTPException(status_code=400, detail="请上传 TXT 文件")
+    content = await ImportService(session)._read_file_content(file)
+    if not content.strip():
+        raise HTTPException(status_code=400, detail="文件内容为空")
+    service = NovelService(session)
+    project = await service.create_project(current_user.id, file.filename.rsplit(".", 1)[0], "等待导入分析")
+    project_id = project.id
+    await session.rollback()
+    try:
+        job = await runner.submit(project_id=project_id, user_id=current_user.id, kind="novel_import", target="project",
+                                  payload={"filename": file.filename, "content": content}, idempotency_key=idempotency_key)
+    except BaseException:
+        await service.delete_projects([project_id], current_user.id)
+        raise
+    if job.project_id != project_id:
+        await service.delete_projects([project_id], current_user.id)
+    return {"job_id": job.id, "project_id": job.project_id}
 
 
 @router.get("", response_model=List[NovelProjectSummary])
@@ -133,14 +156,22 @@ async def delete_novels(
     return {"status": "success", "message": f"成功删除 {len(project_ids)} 个项目"}
 
 
-@router.post("/{project_id}/concept/converse", response_model=ConverseResponse)
+@router.post("/{project_id}/concept/converse", response_model=JobSubmitted, status_code=202)
+@request_deadline
 async def converse_with_concept(
     project_id: str,
     request: ConverseRequest,
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
-) -> ConverseResponse:
-    return await ConceptService(session).converse(project_id, current_user.id, request)
+    runner: JobRunner = Depends(get_job_runner),
+    idempotency_key: str | None = Header(None, min_length=1, max_length=128),
+) -> JobSubmitted:
+    """兼容非流式调用方，但不再占用长 HTTP 请求。网页使用 SSE。"""
+    await NovelService(session).ensure_project_owner(project_id, current_user.id)
+    await session.rollback()
+    job = await runner.submit(project_id=project_id, user_id=current_user.id, kind="concept_converse",
+                              target="project", payload=request.model_dump(), idempotency_key=idempotency_key)
+    return JobSubmitted(job_id=job.id)
 
 
 @router.post("/{project_id}/concept/converse/stream")

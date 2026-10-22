@@ -1,3 +1,4 @@
+from operation_helpers import complete_operation
 import asyncio
 import json
 
@@ -111,6 +112,7 @@ async def test_sync_api_deadline_returns_readable_504(client, auth, project, llm
     llm.reply("concept", "late", before=lambda: asyncio.sleep(1))
     response = await client.post(f"/api/novels/{project}/concept/converse", headers=auth,
                                  json={"user_input": {"value": "test"}, "conversation_state": {}})
+    response = await complete_operation(client, auth, response)
     assert response.status_code == 504
     assert "总时限" in response.json()["detail"]
 

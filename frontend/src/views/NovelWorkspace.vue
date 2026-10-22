@@ -64,6 +64,7 @@
           </button>
         </div>
 
+        <JobProgress :jobs="importJobs.jobs.value" :error="importJobs.error.value" @cancel="cancelImport" @retry="triggerImport" />
         <!-- Loading State -->
         <div v-if="novelStore.isLoading" class="flex flex-col items-center justify-center py-16">
           <div class="md-spinner"></div>
@@ -230,12 +231,16 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { errorMessage } from '@/utils/errors'
+import { globalAlert } from '@/composables/useAlert'
+import { onMounted, ref, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNovelStore } from '@/stores/novel'
 import { useAuthStore } from '@/stores/auth'
 import ProjectCard from '@/components/ProjectCard.vue'
 import type { NovelProject, NovelProjectSummary } from '@/api/novel'
+import JobProgress from '@/components/JobProgress.vue'
+import { useJob } from '@/composables/useJob'
 import { NovelAPI } from '@/api/novel'
 
 const router = useRouter()
@@ -244,7 +249,22 @@ const authStore = useAuthStore()
 
 // 导入相关状态
 const fileInput = ref<HTMLInputElement | null>(null)
-const isImporting = ref(false)
+const submittingImport = ref(false)
+const importProject = ref<string | undefined>(localStorage.getItem('arboris:import-project') || undefined)
+const importJobs = useJob(() => importProject.value, {
+  kind: 'novel_import',
+  async onTerminal(job) {
+    if (job.status === 'succeeded') {
+      await loadProjects()
+      localStorage.removeItem('arboris:import-project')
+      return () => { void router.push(`/novel/${job.project_id}`) }
+    }
+  }
+})
+const isImporting = computed(() => submittingImport.value || importJobs.activeJobs.value.length > 0)
+const cancelImport = async (id: string) => {
+  try { await importJobs.cancel(id) } catch (error) { globalAlert.showError(error, '取消失败') }
+}
 
 // 删除相关状态
 const showDeleteDialog = ref(false)
@@ -288,20 +308,26 @@ const handleFileImport = async (event: Event) => {
 
   const file = target.files[0]
   if (!file.name.endsWith('.txt')) {
-    alert('请上传 .txt 格式的文件')
+    globalAlert.showError('请上传 .txt 格式的文件')
     return
   }
 
-  isImporting.value = true
+  submittingImport.value = true
   try {
-    const response = await NovelAPI.importNovel(file)
+    let key = localStorage.getItem('arboris:import-pending-key')
+    if (!key) { key = crypto.randomUUID(); localStorage.setItem('arboris:import-pending-key', key) }
+    const response = await NovelAPI.importNovel(file, key)
+    localStorage.removeItem('arboris:import-pending-key')
+    importProject.value = response.project_id
+    localStorage.setItem('arboris:import-project', response.project_id)
+    await nextTick()
+    await importJobs.track(response.job_id)
     await loadProjects()
-    router.push(`/novel/${response.id}`)
   } catch (error: any) {
     console.error('导入失败:', error)
-    alert(error.message || '导入失败，请重试')
+    globalAlert.showError(errorMessage(error, '导入失败，请重试'))
   } finally {
-    isImporting.value = false
+    submittingImport.value = false
     target.value = ''
   }
 }

@@ -93,6 +93,7 @@
             :ui-control="currentUIControl"
             :loading="novelStore.isLoading"
             @submit="handleUserInput"
+            @draft-change="unsentInput = $event"
           />
         </div>
       </div>
@@ -120,6 +121,8 @@
 </template>
 
 <script setup lang="ts">
+import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
+import { errorMessage } from '@/utils/errors'
 import { ref, nextTick, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useNovelStore } from '@/stores/novel'
@@ -162,6 +165,8 @@ let activeRequest: AbortController | null = null
 let disposed = false
 let generation = 0
 const startError = ref('')
+const unsentInput = ref('')
+const conversationGuard = useUnsavedChanges(() => !!activeRequest || !!unsentInput.value.trim(), 'AI 正在回复或有尚未发送的输入。离开会中止本轮回复并丢弃未发送的内容，确定继续吗？')
 
 const goBack = () => {
   router.push('/')
@@ -170,6 +175,7 @@ const goBack = () => {
 // 清空所有状态，开始新的灵感对话
 const resetInspirationMode = () => {
   generation++
+  unsentInput.value = ''
   activeRequest?.abort()
   startError.value = ''
   conversationStarted.value = false
@@ -190,10 +196,11 @@ const resetInspirationMode = () => {
 }
 
 const exitConversation = async () => {
-  const confirmed = await globalAlert.showConfirm('确定要退出灵感模式吗？当前进度可能会丢失。', '退出确认')
-  if (confirmed) {
-    activeRequest?.abort()
-    router.push('/')
+  // 有回复/输入时交给路由守卫确认，取消导航不应提前中断上游。
+  if (activeRequest || unsentInput.value.trim()) {
+    await router.push('/')
+  } else if (await globalAlert.showConfirm('确定要退出灵感模式吗？', '退出确认')) {
+    await router.push('/')
   }
 }
 
@@ -223,9 +230,9 @@ const startConversation = async () => {
     await handleUserInput(null)
   } catch (error) {
     console.error('启动灵感模式失败:', error)
-    globalAlert.showError(`无法开始灵感模式: ${error instanceof Error ? error.message : '未知错误'}`, '启动失败')
+    globalAlert.showError(error, '启动失败')
     isInitialLoading.value = false
-    startError.value = error instanceof Error ? error.message : '创建项目失败，请重试'
+    startError.value = errorMessage(error, '创建项目失败，请重试')
   }
 }
 
@@ -286,8 +293,8 @@ const restoreConversation = async (projectId: string) => {
     }
   } catch (error) {
     console.error('恢复对话失败:', error)
-    globalAlert.showError(`无法恢复对话: ${error instanceof Error ? error.message : '未知错误'}`, '加载失败')
-    startError.value = error instanceof Error ? error.message : '恢复对话失败'
+    globalAlert.showError(error, '加载失败')
+    startError.value = errorMessage(error, '恢复对话失败')
   }
 }
 
@@ -324,7 +331,7 @@ const runTurn = async (message: ChatMessage) => {
     }
   } catch (error) {
     if (disposed || token !== generation) return
-    message.error = error instanceof Error ? formatApiDetail(error.message) : '对话失败，请重试本轮'
+    message.error = errorMessage(error, '对话失败，请重试本轮')
     message.retryable = !(error instanceof ConceptStreamError) || error.retryable
   } finally {
     if (activeRequest === controller) activeRequest = null
@@ -351,7 +358,6 @@ const handleGenerateBlueprint = async () => {
 }
 
 const handleBlueprintGenerated = (response: any) => {
-  console.log('收到蓝图生成完成事件:', response)
   completedBlueprint.value = response.blueprint
   blueprintMessage.value = response.ai_message
   showBlueprintConfirmation.value = false
@@ -377,7 +383,7 @@ const handleConfirmBlueprint = async () => {
     }
   } catch (error) {
     console.error('保存蓝图失败:', error)
-    globalAlert.showError(`保存蓝图失败: ${error instanceof Error ? error.message : '未知错误'}`, '保存失败')
+    globalAlert.showError(error, '保存失败')
   }
 }
 

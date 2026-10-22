@@ -44,6 +44,7 @@ from app.models import Prompt, User
 from app.services import llm_service, prompt_service
 from app.services.chapter_ingest_service import ChapterIngestionService
 from app.services.chapter_generation_service import ChapterGenerationService
+from app.services.long_operation_service import register_long_operations
 from app.services.job_service import JobRunner, PLANNING_KINDS
 from app.services.volume_generation_service import VolumeGenerationService
 
@@ -92,7 +93,10 @@ async def job_runner(database, monkeypatch):
     runner = JobRunner(database)
     runner.register("chapter_generate", ChapterGenerationService())
     for kind in PLANNING_KINDS:
+        if kind in ("outline_extend", "novel_import"):
+            continue
         runner.register(kind, VolumeGenerationService(kind))
+    register_long_operations(runner)
     monkeypatch.setattr(app.state, "job_runner", runner)
     try:
         yield runner

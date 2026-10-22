@@ -461,7 +461,7 @@ class NovelService:
     async def get_or_create_chapter(self, project_id: str, chapter_number: int) -> Chapter:
         stmt = (
             select(Chapter)
-            .options(selectinload(Chapter.selected_version))
+            .options(selectinload(Chapter.selected_version), selectinload(Chapter.versions), selectinload(Chapter.evaluations))
             .where(
                 Chapter.project_id == project_id,
                 Chapter.chapter_number == chapter_number,
@@ -474,8 +474,7 @@ class NovelService:
         chapter = Chapter(project_id=project_id, chapter_number=chapter_number)
         self.session.add(chapter)
         await self.session.commit()
-        await self.session.refresh(chapter)
-        return chapter
+        return (await self.session.execute(stmt)).scalars().one()
 
     async def replace_chapter_versions(self, chapter: Chapter, contents: List[str], metadata: Optional[List[Dict]] = None) -> List[ChapterVersion]:
         await self.session.execute(delete(ChapterVersion).where(ChapterVersion.chapter_id == chapter.id))

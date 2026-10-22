@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from enum import Enum
 
 from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import HTTPException
 
 from ..models.project_memory import ProjectMemory
 from ..models.novel import NovelBlueprint, Chapter
@@ -211,15 +213,10 @@ class ConsistencyService:
             
             return result
             
-        except Exception as e:
-            logger.error(f"一致性检查失败: {e}")
-            return ConsistencyCheckResult(
-                is_consistent=True,  # 检查失败时默认通过
-                violations=[],
-                summary=f"检查过程出错: {str(e)}",
-                check_time_ms=int((time.time() - start_time) * 1000)
-            )
-    
+        except Exception:
+            logger.exception("一致性检查失败")
+            raise HTTPException(status_code=500, detail="一致性检查失败，请稍后重试")
+
     async def auto_fix(
         self,
         project_id: str,
@@ -341,7 +338,12 @@ class ConsistencyService:
         project_id: str,
         include_foreshadowing: bool = True
     ) -> Dict[str, str]:
-        """获取检查所需的上下文"""
+        """异步路由通过 run_sync 执行纯数据库读取，模型调用始终在其外部。"""
+        if isinstance(self.db, AsyncSession):
+            return await self.db.run_sync(lambda db: ConsistencyService(db, self.llm_service)._load_check_context(project_id, include_foreshadowing))
+        return self._load_check_context(project_id, include_foreshadowing)
+
+    def _load_check_context(self, project_id, include_foreshadowing=True):
         context = {}
         
         # 获取小说设定

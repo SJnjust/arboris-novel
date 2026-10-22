@@ -9,13 +9,15 @@ from fastapi import HTTPException, Request
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
+from .chapter_maintenance_service import ChapterMaintenanceService
 from ..models.ai_job import AIJob
 from ..models.novel import Chapter, NovelVolume
 
 logger = logging.getLogger(__name__)
 ACTIVE = ("queued", "running")
 TERMINAL = ("succeeded", "failed", "cancelled")
-PLANNING_KINDS = ("blueprint_generate", "volume_outline", "volumes_outline", "volume_smart_split")
+CHAPTER_KINDS = ("chapter_generate", "chapter_evaluate", "chapter_optimize")
+PLANNING_KINDS = ("blueprint_generate", "volume_outline", "volumes_outline", "volume_smart_split", "outline_extend", "novel_import")
 
 
 class JobContext:
@@ -54,6 +56,7 @@ class JobRunner:
         self._closing = False
         self._last_cleanup = datetime.min
         self._owned_gate = asyncio.Semaphore(2)
+        self.chapter_maintenance = ChapterMaintenanceService(self)
 
     def register(self, kind, handler):
         self.handlers[kind] = handler
@@ -64,7 +67,7 @@ class JobRunner:
         async with self._admission:
             async with self.session_factory() as session:
                 active = await session.scalar(select(AIJob).where(AIJob.project_id == project_id,
-                    AIJob.kind.in_((*PLANNING_KINDS, "chapter_generate")), AIJob.status.in_(ACTIVE)))
+                    AIJob.kind.in_((*PLANNING_KINDS, *CHAPTER_KINDS)), AIJob.status.in_(ACTIVE)))
             if active:
                 raise HTTPException(status_code=409, detail={"message": "该项目正在生成，请等待任务完成后编辑大纲或卷规划", "job_id": active.id})
             yield
@@ -102,9 +105,9 @@ class JobRunner:
                     return original
                 conflict_rule = and_(AIJob.kind == kind, AIJob.target == target)
                 if kind in PLANNING_KINDS:
-                    conflict_rule = AIJob.kind.in_((*PLANNING_KINDS, "chapter_generate"))
-                elif kind == "chapter_generate":
-                    conflict_rule = or_(conflict_rule, AIJob.kind.in_(PLANNING_KINDS))
+                    conflict_rule = AIJob.kind.in_((*PLANNING_KINDS, *CHAPTER_KINDS))
+                elif kind in CHAPTER_KINDS:
+                    conflict_rule = or_(and_(AIJob.kind.in_(CHAPTER_KINDS), AIJob.target == target), AIJob.kind.in_(PLANNING_KINDS))
                 conflict = await session.scalar(select(AIJob).where(
                     AIJob.project_id == project_id, conflict_rule, AIJob.status.in_(ACTIVE),
                 ))
@@ -147,6 +150,8 @@ class JobRunner:
                     return
                 if "progress" in values:
                     values["progress"] = max(job.progress, values["progress"])
+                if values.get("status") in TERMINAL and job.kind == "novel_import":
+                    job.payload = {"filename": job.payload.get("filename", "")}
                 for key, value in values.items():
                     setattr(job, key, value)
                 job.updated_at = job.heartbeat_at = datetime.utcnow()
@@ -209,6 +214,9 @@ class JobRunner:
             await self._update(job_id, status="cancelled", stage="cancelled")
         return await self.get(job_id, user_id)
 
+    def maintain_chapter(self, project_id, chapter_number, user_id):
+        self.chapter_maintenance.schedule(project_id, chapter_number, user_id)
+
     def own(self, coroutine):
         """持有编辑后维护任务；异常可见，退出时与 AI 任务一起取消。"""
         if self._closing or len(self.owned_tasks) >= 64:
@@ -235,6 +243,7 @@ class JobRunner:
                 logger.error("编辑后维护失败", exc_info=finished.exception())
 
         task.add_done_callback(done)
+        return task
 
     async def recover(self):
         self._closing = False
@@ -244,6 +253,7 @@ class JobRunner:
                 status="failed", stage="interrupted", updated_at=now, heartbeat_at=now,
                 error={"detail": "服务重启，任务已中断，请重新提交", "status_code": 503},
             ))
+            await session.execute(update(AIJob).where(AIJob.kind == "novel_import").values(payload={}))
             await session.execute(update(Chapter).where(Chapter.status.in_(("generating", "evaluating", "selecting"))).values(status="failed"))
             await session.execute(update(NovelVolume).where(NovelVolume.status == "outlining").values(status="planned"))
             await session.commit()

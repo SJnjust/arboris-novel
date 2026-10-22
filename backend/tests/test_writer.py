@@ -1,3 +1,4 @@
+from operation_helpers import complete_operation
 import pytest
 from sqlalchemy import delete, select
 
@@ -9,6 +10,7 @@ async def test_outline_continuation_preserves_existing_chapters(client, auth, re
     outlines = [{"chapter_number": number, "title": f"线索{number}", "summary": f"找到第{number}条线索"} for number in [2, 3]]
     llm.reply("outline_generation", {"chapters": outlines})
     response = await client.post(f"/api/writer/novels/{project}/chapters/outline", headers=auth, json={"start_chapter": 2, "num_chapters": 2})
+    response = await complete_operation(client, auth, response)
     assert response.status_code == 200
     assert response.json()["id"] == project
     assert [row["chapter_number"] for row in response.json()["blueprint"]["chapter_outline"]] == [1, 2, 3]
@@ -22,7 +24,7 @@ async def test_outline_continuation_preserves_existing_chapters(client, auth, re
 
 
 @pytest.mark.parametrize("count", [1, 2])
-async def test_generation_versions_and_selection_state(client, auth, ready_project, llm, database, count, wait_job):
+async def test_generation_versions_and_selection_state(client, auth, ready_project, llm, database, count, wait_job, job_runner):
     project = ready_project
     base = f"/api/writer/novels/{project}/chapters"
     before = (await client.get(f"/api/novels/{project}/chapters/1", headers=auth)).json()
@@ -63,8 +65,11 @@ async def test_generation_versions_and_selection_state(client, auth, ready_proje
             assert [version.metadata["ai_review"]["is_best"] for version in versions] == [False, True]
     invalid = await client.post(f"{base}/select", headers=auth, json={"chapter_number": 1, "version_index": count})
     assert invalid.status_code == 400
+    llm.reply("extraction", "选定版本的摘要")
     selected = await client.post(f"{base}/select", headers=auth, json={"chapter_number": 1, "version_index": count - 1})
     assert selected.status_code == 200
+    import asyncio
+    await asyncio.gather(*job_runner.owned_tasks)
     fresh = (await client.get(f"/api/novels/{project}/chapters/1", headers=auth)).json()
     assert (fresh["generation_status"], fresh["content"]) == ("successful", contents[-1])
     async with database() as session:
@@ -105,8 +110,9 @@ async def test_missing_outline_does_not_create_chapter(client, auth, project, da
 async def test_bad_outline_json_preserves_existing_outline(client, auth, ready_project, llm, database):
     llm.reply("outline_generation", "invalid outline JSON")
     response = await client.post(f"/api/writer/novels/{ready_project}/chapters/outline", headers=auth, json={"start_chapter": 2, "num_chapters": 2})
+    response = await complete_operation(client, auth, response)
     assert response.status_code == 500
-    assert response.json()["detail"].startswith("大纲生成失败:")
+    assert response.json()["detail"] == "大纲生成失败，请稍后重试"
     async with database() as session:
         assert [row.chapter_number for row in (await session.scalars(select(ChapterOutline))).all()] == [1]
 
@@ -129,6 +135,7 @@ async def test_evaluation_returns_to_confirmation_and_records_decision(client, a
     if configured:
         llm.reply("evaluation", "线索明确，节奏紧凑。", before=assert_evaluating)
     response = await client.post(f"/api/writer/novels/{ready_project}/chapters/evaluate", headers=auth, json={"chapter_number": 1})
+    response = await complete_operation(client, auth, response)
     assert response.status_code == 200
     async with database() as session:
         assert (await session.scalars(select(Chapter))).one().status == "waiting_for_confirm"

@@ -4,7 +4,7 @@
     <div class="md-card md-card-elevated h-full flex flex-col" style="border-radius: var(--md-radius-xl);">
       <!-- 章节工作区头部 -->
       <div v-if="selectedChapterNumber" class="md-card-header flex-shrink-0">
-        <div class="flex items-center justify-between">
+        <div class="flex flex-wrap items-center justify-between gap-3">
           <div>
             <div class="flex items-center gap-3 mb-2">
               <h2 class="md-title-large font-semibold">第{{ selectedChapterNumber }}章</h2>
@@ -23,7 +23,7 @@
             <p class="md-body-small md-on-surface-variant">{{ selectedChapterOutline?.summary || '暂无章节描述' }}</p>
           </div>
 
-          <div class="flex items-center gap-2">
+          <div class="flex flex-wrap items-center gap-2">
             <button
               v-if="isChapterCompleted(selectedChapterNumber)"
               @click="openEditModal"
@@ -149,7 +149,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { useBodyDraft } from '@/composables/useBodyDraft'
+import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
+import { computed, ref, watch } from 'vue'
 import { formatApiDetail } from '@/api/novel'
 import { globalAlert } from '@/composables/useAlert'
 import type { AIJob, Chapter, ChapterOutline, ChapterGenerationResponse, ChapterVersion, NovelProject } from '@/api/novel'
@@ -161,6 +163,7 @@ import ChapterFailed from './workspace/ChapterFailed.vue'
 import ChapterEmpty from './workspace/ChapterEmpty.vue'
 
 interface Props {
+  saveContent?: (data: { chapterNumber: number; content: string }) => Promise<void>
   project: NovelProject | null
   selectedChapterNumber: number | null
   generatingChapter: number | null
@@ -195,7 +198,7 @@ const emit = defineEmits([
 ])
 
 const confirmRegenerateChapter = async () => {
-  const confirmed = await globalAlert.showConfirm('重新生成会覆盖当前章节的现有内容，确定继续吗？', '重新生成确认')
+  const confirmed = await globalAlert.showConfirm(`重新生成将删除第 ${props.selectedChapterNumber} 章的全部正文版本和评审，再生成新版本；章节大纲保留。此操作无法撤销，确定继续吗？`, '重新生成确认')
   if (confirmed) {
     emit('regenerateChapter')
   }
@@ -203,8 +206,12 @@ const confirmRegenerateChapter = async () => {
 
 // 编辑模态框状态
 const showEditModal = ref(false)
-const editingContent = ref('')
+const bodyDraft = useBodyDraft()
+const editingContent = bodyDraft.content
+const editGuard = useUnsavedChanges(() => showEditModal.value && editingContent.value !== bodyDraft.original.value, '正文尚未保存。本机草稿会保留，确定离开编辑吗？')
 const isSaving = ref(false)
+
+watch(() => props.project?.id, () => { showEditModal.value = false; bodyDraft.close() })
 
 // 清理版本内容的辅助函数
 const cleanVersionContent = (content: string): string => {
@@ -246,34 +253,31 @@ const cleanVersionContent = (content: string): string => {
   return cleaned
 }
 
-const openEditModal = () => {
+const openEditModal = async () => {
   if (selectedChapter.value?.content) {
-    editingContent.value = cleanVersionContent(selectedChapter.value.content)
-    showEditModal.value = true
+    if (await bodyDraft.open(props.project!.id, props.selectedChapterNumber!, cleanVersionContent(selectedChapter.value.content))) showEditModal.value = true
   }
 }
 
-const closeEditModal = () => {
+const closeEditModal = async () => {
+  if (isSaving.value || !await editGuard.confirmLeave()) return
+  bodyDraft.close()
   showEditModal.value = false
   editingContent.value = ''
   isSaving.value = false
 }
 
 const saveEditedContent = async () => {
-  if (!props.selectedChapterNumber || !editingContent.value.trim()) return
-  
+  if (!props.selectedChapterNumber || !editingContent.value.trim() || isSaving.value) return
   isSaving.value = true
   try {
-    emit('editChapter', {
-      chapterNumber: props.selectedChapterNumber,
-      content: editingContent.value
-    })
-    closeEditModal()
+    if (!props.saveContent) throw new Error('暂时无法保存，请稍后重试')
+    await props.saveContent({ chapterNumber: props.selectedChapterNumber, content: editingContent.value })
+    bodyDraft.saved()
+    showEditModal.value = false
   } catch (error) {
-    console.error('保存章节内容失败:', error)
-  } finally {
-    isSaving.value = false
-  }
+    globalAlert.showError(error, '保存失败')
+  } finally { isSaving.value = false }
 }
 
 const selectedChapter = computed(() => {
@@ -313,7 +317,7 @@ const isChapterEvaluationFailed = (chapterNumber: number) => {
 const canGenerateChapter = (chapterNumber: number | null) => {
   if (chapterNumber === null || !props.project?.blueprint?.chapter_outline) return false
 
-  const outlines = props.project.blueprint.chapter_outline.sort((a, b) => a.chapter_number - b.chapter_number)
+  const outlines = [...props.project.blueprint.chapter_outline].sort((a, b) => a.chapter_number - b.chapter_number)
   
   for (const outline of outlines) {
     if (outline.chapter_number >= chapterNumber) break
@@ -412,6 +416,9 @@ const currentComponentProps = computed(() => {
 }
 
 .m3-editor-dialog {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   max-width: min(1200px, calc(100vw - 32px));
   max-height: calc(100vh - 32px);
   border-radius: var(--md-radius-xl);

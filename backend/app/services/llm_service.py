@@ -205,16 +205,6 @@ class LLMService:
                            {"role": "user", "content": "请从上一段最后一个字符之后继续，只返回后续正文，不要重复已生成的内容。"}]
         except InternalServerError as exc:
             detail = "AI 服务内部错误，请稍后重试"
-            response = getattr(exc, "response", None)
-            if response is not None:
-                try:
-                    payload = response.json()
-                    error_data = payload.get("error", {}) if isinstance(payload, dict) else {}
-                    detail = error_data.get("message_zh") or error_data.get("message") or detail
-                except Exception:
-                    detail = str(exc) or detail
-            else:
-                detail = str(exc) or detail
             logger.error(
                 "LLM stream internal error: model=%s user_id=%s detail=%s",
                 config.get("model"),

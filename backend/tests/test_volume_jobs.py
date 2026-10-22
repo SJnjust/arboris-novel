@@ -1,3 +1,4 @@
+from operation_helpers import complete_operation
 import asyncio
 import json
 
@@ -209,6 +210,7 @@ async def test_legacy_outline_request_only_sends_ten_recent_outlines(client, aut
         await session.commit()
     llm.reply('outline_generation', batch(51, 52))
     response = await client.post(f'/api/writer/novels/{ready_project}/chapters/outline', headers=auth, json={'start_chapter': 51, 'num_chapters': 2})
+    response = await complete_operation(client, auth, response)
     assert response.status_code == 200
     prompt = llm.calls[-1][1]['messages'][-1].content
     assert 'OMITTED_EARLY_' not in prompt and 'RECENT_41' in prompt and 'RECENT_50' in prompt

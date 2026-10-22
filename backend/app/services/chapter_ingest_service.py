@@ -8,7 +8,7 @@ from __future__ import annotations
 """
 
 import logging
-from typing import Dict, List, Optional, Sequence
+from typing import Awaitable, Callable, Dict, List, Optional, Sequence
 
 from ..core.config import settings
 from ..services.llm_service import LLMService
@@ -44,12 +44,15 @@ class ChapterIngestionService:
         content: str,
         summary: Optional[str],
         user_id: int,
+        is_current: Optional[Callable[[], Awaitable[bool]]] = None,
     ) -> None:
         """将章节正文与摘要写入向量库，供后续 RAG 检索使用。"""
         if not settings.vector_store_enabled:
             logger.warning("向量库未启用，跳过章节向量写入: project=%s chapter=%s", project_id, chapter_number)
             return
         if not content.strip():
+            if is_current and await is_current():
+                await self._vector_store.delete_by_chapters(project_id, [chapter_number])
             logger.warning("章节正文为空，跳过向量写入: project=%s chapter=%s", project_id, chapter_number)
             return
 
@@ -64,8 +67,6 @@ class ChapterIngestionService:
             chapter_number,
             len(chunks),
         )
-        await self._vector_store.delete_by_chapters(project_id, [chapter_number])
-
         chunk_records = []
         for index, chunk_text in enumerate(chunks):
             embedding = await self._llm_service.get_embedding(
@@ -97,14 +98,7 @@ class ChapterIngestionService:
                 }
             )
 
-        if chunk_records:
-            await self._vector_store.upsert_chunks(records=chunk_records)
-            logger.info(
-                "章节正文向量写入完成: project=%s chapter=%s 成功片段=%d",
-                project_id,
-                chapter_number,
-                len(chunk_records),
-            )
+        summary_records = []
 
         if summary:
             cleaned_summary = summary.strip()
@@ -115,29 +109,35 @@ class ChapterIngestionService:
                 )
                 if summary_embedding:
                     summary_id = f"{project_id}:{chapter_number}:summary"
-                    await self._vector_store.upsert_summaries(
-                        records=[
-                            {
-                                "id": summary_id,
-                                "project_id": project_id,
-                                "chapter_number": chapter_number,
-                                "title": title,
-                                "summary": cleaned_summary,
-                                "embedding": summary_embedding,
-                            }
-                        ]
-                    )
-                    logger.info(
-                        "章节摘要向量写入完成: project=%s chapter=%s",
-                        project_id,
-                        chapter_number,
-                    )
+                    summary_records = [{
+                        "id": summary_id,
+                        "project_id": project_id,
+                        "chapter_number": chapter_number,
+                        "title": title,
+                        "summary": cleaned_summary,
+                        "embedding": summary_embedding,
+                    }]
                 else:
                     logger.warning(
                         "生成章节摘要向量失败，已跳过: project=%s chapter=%s",
                         project_id,
                         chapter_number,
                     )
+
+        # 先完成所有慢速向量计算，再检查正文指纹；每次外部写入前再次检查。
+        if is_current and not await is_current():
+            return
+        await self._vector_store.delete_by_chapters(project_id, [chapter_number])
+        if chunk_records:
+            if is_current and not await is_current():
+                return
+            await self._vector_store.upsert_chunks(records=chunk_records)
+            logger.info("章节正文向量写入完成: project=%s chapter=%s 成功片段=%d", project_id, chapter_number, len(chunk_records))
+        if summary_records:
+            if is_current and not await is_current():
+                return
+            await self._vector_store.upsert_summaries(records=summary_records)
+            logger.info("章节摘要向量写入完成: project=%s chapter=%s", project_id, chapter_number)
 
     async def delete_chapters(self, project_id: str, chapter_numbers: Sequence[int]) -> None:
         """从向量库中删除指定章节的所有片段与摘要。"""

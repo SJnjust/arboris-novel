@@ -1,3 +1,4 @@
+from operation_helpers import complete_operation
 import asyncio
 import json
 from types import SimpleNamespace
@@ -56,6 +57,7 @@ async def test_sse_deltas_ping_final_and_sync_replay_share_contract(client, auth
     assert data[-1][0] == 'final' and final['ai_message'] == text
     assert final['conversation_state'] == {'ai_message': '不得推送'}
     replay = await client.post(f'/api/novels/{project}/concept/converse', headers=auth, json=body)
+    replay = await complete_operation(client, auth, replay)
     assert replay.status_code == 200 and replay.json() == final
     assert len(calls) == 1
     async with database() as session:
@@ -207,4 +209,5 @@ async def test_lossless_quote_repair_keeps_sync_and_stream_contract(client, auth
     assert streamed[-1][0] == 'final'
     assert ''.join(item['text'] for kind, item in streamed if kind == 'delta') == '他说"你好"'
     replay = await client.post(f'/api/novels/{project}/concept/converse', headers=auth, json=body)
+    replay = await complete_operation(client, auth, replay)
     assert replay.json() == streamed[-1][1]

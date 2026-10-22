@@ -94,7 +94,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, watch } from 'vue'
+import { ref, nextTick, watch, onUnmounted } from 'vue'
 import type { UIControl } from '@/api/novel'
 
 interface Props {
@@ -105,9 +105,12 @@ interface Props {
 const props = defineProps<Props>()
 const emit = defineEmits<{
   submit: [userInput: { id: string; value: string } | null]
+  draftChange: [text: string]
 }>()
 
 const textInput = ref('')
+watch(textInput, value => emit('draftChange', value), { flush: 'sync', immediate: true })
+onUnmounted(() => emit('draftChange', ''))
 const textInputRef = ref<HTMLTextAreaElement>()
 const isManualInput = ref(false)
 
@@ -138,6 +141,7 @@ const handleTextareaInput = () => {
 
 const handleOptionSelect = (id: string, label: string) => {
   emit('submit', { id, value: label })
+  textInput.value = ''
 }
 
 const handleTextSubmit = () => {

@@ -1,5 +1,6 @@
 // AIMETA P=提示组合函数_全局提示消息管理|R=showAlert_hideAlert|NR=不含UI组件|E=compose:useAlert|X=internal|A=useAlert函数|D=vue|S=dom|RD=./README.ai
 import { ref } from 'vue'
+import { errorMessage } from '@/utils/errors'
 
 type AlertType = 'success' | 'error' | 'info' | 'confirmation'
 
@@ -65,8 +66,8 @@ const showSuccess = (message: string, title: string = '成功') => {
   return showAlert(message, 'success', title);
 };
 
-const showError = (message: string, title: string = '错误') => {
-  return showAlert(message, 'error', title);
+const showError = (message: unknown, title: string = '错误') => {
+  return showAlert(errorMessage(message), 'error', title);
 };
 
 const showConfirm = (message: string, title: string = '请确认') => {

@@ -10,31 +10,8 @@ export const API_PREFIX = '/api'
 // 统一的请求处理函数
 export type RequestOptions = RequestInit & { timeoutMs?: number | null }
 
-export function redactSensitiveText(text: string): string {
-  return text.replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[已隐藏]@')
-    .replace(/\bBearer\s+(?!\[已隐藏\])[^\s"'<>;,，；}]+/gi, 'Bearer [已隐藏]')
-    .replace(/\bsk-[A-Za-z0-9_-]+/g, '[已隐藏]')
-    .replace(/(["']?(?:api[_-]?key|access[_-]?token|secret[_-]?key|authorization|password|passwd|token)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;，；}]+)/gi, '$1[已隐藏]')
-}
-
-export function formatApiDetail(detail: unknown): string {
-  if (typeof detail === 'string') return redactSensitiveText(detail)
-  if (Array.isArray(detail)) {
-    return detail.map(item => {
-      if (item && typeof item === 'object' && 'msg' in item) {
-        const location = Array.isArray(item.loc) ? item.loc.filter((part: unknown) => !['body', 'query', 'path'].includes(String(part))).join('.') : ''
-        return redactSensitiveText(`${location ? `${location}：` : ''}${String(item.msg)}`)
-      }
-      return formatApiDetail(item)
-    }).join('；')
-  }
-  if (detail && typeof detail === 'object' && 'message' in detail) {
-    const versions = 'failed_versions' in detail && Array.isArray(detail.failed_versions)
-      ? detail.failed_versions.map(item => `版本 ${Number(item.index) + 1}：${formatApiDetail(item.detail)}`) : []
-    return redactSensitiveText([String(detail.message), ...versions].join('；'))
-  }
-  return '请求失败，请稍后重试'
-}
+import { formatApiDetail } from '@/utils/errors'
+export { formatApiDetail, redactSensitiveText, errorMessage } from '@/utils/errors'
 
 export class ApiError extends Error {
   constructor(message: string, public status: number, public detail: unknown) {
@@ -158,8 +135,8 @@ export interface AIJob {
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
   stage: string
   progress: number
-  payload: { chapter_number?: number; writing_notes?: string; volume_number?: number; resume?: boolean }
-  result: { version_count?: number; failed_versions?: Array<{ index: number; detail: unknown }>; project_id?: string; completed_volumes?: number[]; volume_count?: number } | null
+  payload: { start_chapter?: number; num_chapters?: number; dimension?: string; additional_notes?: string; chapter_number?: number; writing_notes?: string; volume_number?: number; resume?: boolean }
+  result: { id?: string; optimized_content?: string; optimization_notes?: string; emotion_points?: any[]; total_chapters?: number; average_intensity?: number; emotion_distribution?: Record<string, number>; version_count?: number; failed_versions?: Array<{ index: number; detail: unknown }>; project_id?: string; completed_volumes?: number[]; volume_count?: number } | null
   error: { detail: unknown; status_code: number } | null
   created_at: string
   updated_at: string
@@ -311,16 +288,15 @@ export class NovelAPI {
     })
   }
 
-  static async importNovel(file: File): Promise<{ id: string }> {
+  static async importNovel(file: File, key: string, options: RequestOptions = {}): Promise<JobSubmitted & { project_id: string }> {
     const formData = new FormData()
     formData.append('file', file)
     return request(`${NOVELS_BASE}/import`, {
-      timeoutMs: null,
+      ...options,
+      timeoutMs: 95000,
       method: 'POST',
       body: formData,
-      headers: {
-        // 让 browser 自动设置 Content-Type 为 multipart/form-data，不手动设置
-      }
+      headers: { 'Idempotency-Key': key }
     })
   }
 
@@ -340,7 +316,7 @@ export class NovelAPI {
     projectId: string,
     userInput: any,
     conversationState: any = {}
-  ): Promise<ConverseResponse> {
+  ): Promise<JobSubmitted> {
     const formattedUserInput = userInput || { id: null, value: null }
     return request(`${NOVELS_BASE}/${projectId}/concept/converse`, {
       timeoutMs: null,
@@ -417,9 +393,10 @@ export class NovelAPI {
     return request(`${API_BASE_URL}/api/jobs/${jobId}/cancel`, { ...options, method: 'POST' })
   }
 
-  static async evaluateChapter(projectId: string, chapterNumber: number): Promise<NovelProject> {
+  static async evaluateChapter(projectId: string, chapterNumber: number, key: string, options: RequestOptions = {}): Promise<JobSubmitted> {
     return request(`${WRITER_BASE}/${projectId}/chapters/evaluate`, {
-      timeoutMs: null,
+      ...options,
+      headers: { 'Idempotency-Key': key },
       method: 'POST',
       body: JSON.stringify({ chapter_number: chapterNumber })
     })
@@ -474,10 +451,13 @@ export class NovelAPI {
   static async generateChapterOutline(
     projectId: string,
     startChapter: number,
-    numChapters: number
-  ): Promise<NovelProject> {
+    numChapters: number,
+    key: string,
+    options: RequestOptions = {}
+  ): Promise<JobSubmitted> {
     return request(`${WRITER_BASE}/${projectId}/chapters/outline`, {
-      timeoutMs: null,
+      ...options,
+      headers: { 'Idempotency-Key': key },
       method: 'POST',
       body: JSON.stringify({
         start_chapter: startChapter,
@@ -541,9 +521,10 @@ export class OptimizerAPI {
   /**
    * 对章节内容进行分层优化
    */
-  static async optimizeChapter(optimizeReq: OptimizeRequest): Promise<OptimizeResponse> {
+  static async optimizeChapter(optimizeReq: OptimizeRequest, key: string, options: RequestOptions = {}): Promise<JobSubmitted> {
     return request(`${OPTIMIZER_BASE}/optimize`, {
-      timeoutMs: null,
+      ...options,
+      headers: { 'Idempotency-Key': key },
       method: 'POST',
       body: JSON.stringify(optimizeReq)
     })

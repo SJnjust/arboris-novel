@@ -8,10 +8,13 @@ import json
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Header, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...core.request_deadline import RequestDeadlineRoute, request_deadline
+from ...schemas.job import JobSubmitted
+from ...services.job_service import JobRunner, get_job_runner
 from ...core.dependencies import get_current_user
 from ...db.session import get_session
 from ...schemas.user import UserInDB
@@ -20,7 +23,7 @@ from ...services.novel_service import NovelService
 from ...services.prompt_service import PromptService
 from ...utils.json_utils import remove_think_tags, unwrap_markdown_json
 
-router = APIRouter(prefix="/api/optimizer", tags=["Optimizer"])
+router = APIRouter(prefix="/api/optimizer", tags=["Optimizer"], route_class=RequestDeadlineRoute)
 logger = logging.getLogger(__name__)
 
 
@@ -92,8 +95,7 @@ DEFAULT_RHYTHM_PROMPT = """# 节奏韵律优化专家
 """
 
 
-@router.post("/optimize", response_model=OptimizeResponse)
-async def optimize_chapter(
+async def _execute_optimize_chapter(
     request: OptimizeRequest,
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
@@ -208,6 +210,8 @@ async def optimize_chapter(
             dimension=request.dimension
         )
         
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception(
             "项目 %s 第 %s 章优化失败: %s",
@@ -217,7 +221,7 @@ async def optimize_chapter(
         )
         raise HTTPException(
             status_code=500,
-            detail=f"优化过程中发生错误: {str(exc)[:200]}"
+            detail="优化失败，请稍后重试"
         )
 
 
@@ -228,6 +232,7 @@ async def apply_optimization(
     optimized_content: str,
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
+    runner: JobRunner = Depends(get_job_runner),
 ):
     """
     应用优化后的内容到章节
@@ -250,7 +255,9 @@ async def apply_optimization(
     
     # 更新内容
     chapter.selected_version.content = optimized_content
+    chapter.real_summary = None
     await session.commit()
+    runner.maintain_chapter(project_id, chapter_number, current_user.id)
     
     logger.info(
         "用户 %s 应用了项目 %s 第 %s 章的优化内容",
@@ -260,3 +267,19 @@ async def apply_optimization(
     )
     
     return {"status": "success", "message": "优化内容已应用"}
+
+
+@router.post("/optimize", response_model=JobSubmitted, status_code=202)
+@request_deadline
+async def optimize_chapter(
+    request: OptimizeRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+    runner: JobRunner = Depends(get_job_runner),
+    idempotency_key: Optional[str] = Header(None, min_length=1, max_length=128),
+) -> JobSubmitted:
+    await NovelService(session).ensure_project_owner(request.project_id, current_user.id)
+    await session.rollback()
+    job = await runner.submit(project_id=request.project_id, user_id=current_user.id, kind="chapter_optimize",
+                              target=str(request.chapter_number), payload=request.model_dump(), idempotency_key=idempotency_key)
+    return JobSubmitted(job_id=job.id)

@@ -403,6 +403,7 @@
 </template>
 
 <script setup lang="ts">
+import { errorMessage } from '@/utils/errors'
 import { computed, defineProps, ref, watch } from 'vue'
 import { NovelAPI } from '@/api/novel'
 import { AdminAPI } from '@/api/admin'
@@ -639,7 +640,7 @@ const loadChapterDetail = async (chapterNumber: number) => {
     chapterCache.set(chapterNumber, detail)
     selectedChapter.value = detail
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '加载失败'
+    error.value = errorMessage(err, '加载失败')
     console.error('加载章节详情失败:', err)
   } finally {
     isLoading.value = false

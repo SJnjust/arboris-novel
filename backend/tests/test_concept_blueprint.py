@@ -1,3 +1,4 @@
+from operation_helpers import complete_operation
 import json
 
 import pytest
@@ -11,7 +12,8 @@ CONCEPT = {"ai_message": "你希望调查从哪里开始？", "ui_control": {"ty
 
 async def converse(client, auth, project, llm):
     llm.reply("concept", CONCEPT)
-    return await client.post(f"/api/novels/{project}/concept/converse", headers=auth, json={"user_input": {"value": "从失踪目录开始"}, "conversation_state": {}})
+    submitted = await client.post(f"/api/novels/{project}/concept/converse", headers=auth, json={"user_input": {"value": "从失踪目录开始"}, "conversation_state": {}})
+    return await complete_operation(client, auth, submitted)
 
 
 async def test_concept_round_persists_ordered_conversation(client, auth, project, llm, database):
@@ -77,14 +79,9 @@ async def test_invalid_json_keeps_existing_state(client, auth, project, llm, dat
     llm.reply(stage, "this is not JSON")
     endpoint = "concept/converse" if stage == "concept" else "blueprint/generate"
     response = await client.post(f"/api/novels/{project}/{endpoint}", headers=auth, **({"json": {"user_input": {"value": "test"}, "conversation_state": {}}} if stage == "concept" else {}))
-    if stage == "screenwriting":
-        assert response.status_code == 202
-        job = await wait_job(response.json()["job_id"])
-        assert job["status"] == "failed" and job["error"]["status_code"] == 500
-        assert "AI 返回的内容格式不正确" in job["error"]["detail"]
-    else:
-        assert response.status_code == 500
-        assert "AI 返回的内容格式不正确" in response.json()["detail"]
+    response = await complete_operation(client, auth, response)
+    assert response.status_code == 500
+    assert "AI 返回的内容格式不正确" in response.json()["detail"]
     async with database() as session:
         stored = await session.get(NovelBlueprint, project)
         # create_project already inserts an empty blueprint; failure must not fill it.
@@ -96,6 +93,7 @@ async def test_invalid_json_keeps_existing_state(client, auth, project, llm, dat
 async def test_length_finish_reason_is_an_error_not_partial_json(client, auth, project, llm, database):
     llm.reply("concept", CONCEPT, finish_reason="length")
     response = await client.post(f"/api/novels/{project}/concept/converse", headers=auth, json={"user_input": {"value": "test"}, "conversation_state": {}})
+    response = await complete_operation(client, auth, response)
     assert response.status_code == 500
     assert "AI 响应因长度限制被截断" in response.json()["detail"]
     async with database() as session:

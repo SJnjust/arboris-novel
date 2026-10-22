@@ -12,6 +12,7 @@ from .core.config import settings
 from .db.init_db import init_db
 from .services.prompt_service import PromptService
 from .db.session import AsyncSessionLocal, engine
+from .services.long_operation_service import register_long_operations
 from .services.job_service import JobRunner
 from .services.chapter_generation_service import ChapterGenerationService
 from .services.volume_generation_service import VolumeGenerationService
@@ -101,7 +102,11 @@ app.state.job_runner = JobRunner(AsyncSessionLocal, user_limit=settings.ai_job_u
                                retention_days=settings.ai_job_retention_days)
 app.state.job_runner.register("chapter_generate", ChapterGenerationService())
 for kind in PLANNING_KINDS:
+    if kind in ("outline_extend", "novel_import"):
+        continue
     app.state.job_runner.register(kind, VolumeGenerationService(kind))
+
+register_long_operations(app.state.job_runner)
 
 # CORS 配置，生产环境建议改为具体域名
 app.add_middleware(

@@ -127,6 +127,7 @@
 </template>
 
 <script setup lang="ts">
+import { globalAlert } from '@/composables/useAlert'
 import { ref, onMounted, computed } from 'vue';
 import { getLLMConfig, createOrUpdateLLMConfig, deleteLLMConfig, getAvailableModels, type LLMConfigCreate } from '@/api/llm';
 
@@ -164,19 +165,23 @@ onMounted(async () => {
 });
 
 const handleSave = async () => {
-  await createOrUpdateLLMConfig(config.value);
-  alert('设置已保存！');
+  try {
+    await createOrUpdateLLMConfig(config.value);
+    globalAlert.showSuccess('设置已保存！');
+  } catch (error) { globalAlert.showError(error, '保存设置失败'); }
 };
 
 const handleDelete = async () => {
-  if (confirm('确定要删除您的自定义LLM配置吗？删除后将恢复为默认配置。')) {
+  if (await globalAlert.showConfirm('确定要删除您的自定义LLM配置吗？删除后将恢复为默认配置。', '删除配置确认')) {
+    try {
     await deleteLLMConfig();
     config.value = {
       llm_provider_url: '',
       llm_provider_api_key: '',
       llm_provider_model: '',
     };
-    alert('配置已删除！');
+    globalAlert.showSuccess('配置已删除！');
+    } catch (error) { globalAlert.showError(error, '删除设置失败'); }
   }
 };
 
@@ -199,7 +204,7 @@ const clearApiModel = () => {
 const loadModels = async () => {
   // 验证表单
   if (!config.value.llm_provider_api_key) {
-    alert('请先填写 API Key');
+    globalAlert.showError('请先填写 API Key');
     return;
   }
 
@@ -213,11 +218,11 @@ const loadModels = async () => {
     if (models.length > 0) {
       showModelDropdown.value = true;
     } else {
-      alert('未获取到模型列表，请检查API配置是否正确');
+      globalAlert.showError('未获取到模型列表，请检查API配置是否正确');
     }
   } catch (error) {
     console.error('Failed to load models:', error);
-    alert('获取模型列表失败，请检查网络连接和API配置');
+    globalAlert.showError('获取模型列表失败，请检查网络连接和API配置');
   } finally {
     isLoadingModels.value = false;
   }

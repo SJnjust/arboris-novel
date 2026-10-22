@@ -60,6 +60,7 @@
 </template>
 
 <script setup lang="ts">
+import { errorMessage } from '@/utils/errors'
 import { computed, reactive, ref } from 'vue'
 import { NAlert, NButton, NCard, NForm, NFormItem, NInput, NSpace, NSpin } from 'naive-ui'
 
@@ -117,7 +118,7 @@ const handleSubmit = async () => {
     resetForm()
     await showAlert('密码已更新，请使用新密码继续操作', 'success')
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '密码更新失败'
+    error.value = errorMessage(err, '密码更新失败')
   } finally {
     submitting.value = false
   }

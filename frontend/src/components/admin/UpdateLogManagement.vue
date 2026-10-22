@@ -89,6 +89,7 @@
 </template>
 
 <script setup lang="ts">
+import { errorMessage } from '@/utils/errors'
 import { computed, onMounted, ref } from 'vue'
 import {
   NAlert,
@@ -136,7 +137,7 @@ const fetchLogs = async () => {
   try {
     logs.value = await AdminAPI.listUpdateLogs()
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '获取更新日志失败'
+    error.value = errorMessage(err, '获取更新日志失败')
   } finally {
     loading.value = false
   }
@@ -159,7 +160,7 @@ const addLog = async () => {
     resetForm()
     showAlert('更新日志发布成功', 'success')
   } catch (err) {
-    showAlert(err instanceof Error ? err.message : '发布失败', 'error')
+    showAlert(errorMessage(err, '发布失败'), 'error')
   } finally {
     submitting.value = false
   }
@@ -172,7 +173,7 @@ const deleteLog = async (id: number) => {
     logs.value = logs.value.filter((item) => item.id !== id)
     showAlert('删除成功', 'success')
   } catch (err) {
-    showAlert(err instanceof Error ? err.message : '删除失败', 'error')
+    showAlert(errorMessage(err, '删除失败'), 'error')
   } finally {
     deletingId.value = null
   }
@@ -187,7 +188,7 @@ const togglePin = async (log: UpdateLog, value: boolean) => {
       logs.value.splice(index, 1, updated)
     }
   } catch (err) {
-    showAlert(err instanceof Error ? err.message : '更新失败', 'error')
+    showAlert(errorMessage(err, '更新失败'), 'error')
   } finally {
     togglingId.value = null
   }

@@ -8,7 +8,7 @@
         </svg>
       </div>
       <h3 class="md-title-medium font-semibold mb-2">选择章节开始创作</h3>
-      <p class="md-body-medium md-on-surface-variant">从左侧章节列表中选择一个章节，开始您的创作之旅</p>
+      <p class="md-body-medium md-on-surface-variant">打开章节目录并选择一章开始创作。没有大纲时，请先到项目详情生成蓝图或本卷大纲。</p>
     </div>
   </div>
 </template>

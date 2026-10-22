@@ -7,11 +7,15 @@ import json
 import logging
 import re
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Header, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...services.novel_service import NovelService
+from ...core.request_deadline import RequestDeadlineRoute, request_deadline
+from ...schemas.job import JobSubmitted
+from ...services.job_service import JobRunner, get_job_runner
 from ...core.dependencies import get_current_user
 from ...db.session import get_session
 from ...models.novel import Chapter, ChapterOutline, ChapterVersion, NovelProject
@@ -20,7 +24,7 @@ from ...services.llm_service import LLMService
 from ...services.prompt_service import PromptService
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/analytics", tags=["Analytics"])
+router = APIRouter(prefix="/api/analytics", tags=["Analytics"], route_class=RequestDeadlineRoute)
 
 
 # ==================== 数据模型 ====================
@@ -393,8 +397,7 @@ async def get_foreshadowing(
     )
 
 
-@router.post("/{project_id}/analyze-emotion-ai")
-async def analyze_emotion_with_ai(
+async def _execute_analyze_emotion_with_ai(
     project_id: str,
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
@@ -503,5 +506,20 @@ async def analyze_emotion_with_ai(
         
     except Exception as e:
         logger.error(f"AI情感分析失败: {e}")
-        # 回退到关键词分析
-        return await get_emotion_curve(project_id, session, current_user)
+        raise HTTPException(status_code=500, detail="AI 情感分析失败，请稍后重试") from e
+
+
+@router.post("/{project_id}/analyze-emotion-ai", response_model=JobSubmitted, status_code=202)
+@request_deadline
+async def analyze_emotion_with_ai(
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+    runner: JobRunner = Depends(get_job_runner),
+    idempotency_key: Optional[str] = Header(None, min_length=1, max_length=128),
+) -> JobSubmitted:
+    await NovelService(session).ensure_project_owner(project_id, current_user.id)
+    await session.rollback()
+    job = await runner.submit(project_id=project_id, user_id=current_user.id, kind="emotion_analyze",
+                              target="project", payload={}, idempotency_key=idempotency_key)
+    return JobSubmitted(job_id=job.id)

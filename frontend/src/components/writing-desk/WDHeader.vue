@@ -40,6 +40,7 @@
           </button>
           <button
             @click="$emit('toggleSidebar')"
+            aria-label="打开或关闭章节目录"
             class="md-icon-btn md-ripple lg:hidden"
           >
             <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">

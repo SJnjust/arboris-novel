@@ -1,3 +1,4 @@
+from operation_helpers import complete_operation
 import asyncio
 
 import httpx
@@ -16,6 +17,11 @@ def test_api_deadlines_are_explicit_and_limited_to_task_routes():
                if getattr(route.endpoint, 'request_deadline', False)}
     assert limited == {
         ('POST', '/api/writer/novels/{project_id}/chapters/generate'),
+        *{('POST', '/api/writer/novels/{project_id}/chapters/' + path) for path in ['evaluate', 'outline', 'select', 'edit', 'edit-fast']},
+        ('POST', '/api/novels/import'), ('POST', '/api/novels/{project_id}/concept/converse'),
+        ('POST', '/api/optimizer/optimize'), ('POST', '/api/analytics/{project_id}/analyze-emotion-ai'),
+        ('POST', '/api/review/six-dimension'), ('POST', '/api/review/consistency'),
+        ('POST', '/api/llm-config/models'),
         ('GET', '/api/jobs'), ('GET', '/api/jobs/{job_id}'),
         ('POST', '/api/jobs/{job_id}/cancel'),
         ('POST', '/api/novels/{project_id}/blueprint/generate'),
@@ -30,11 +36,12 @@ def test_api_deadlines_are_explicit_and_limited_to_task_routes():
     assert not any(middleware.cls.__name__ == 'RequestDeadlineMiddleware' for middleware in app.user_middleware)
 
 
-async def test_legacy_sync_generation_can_outlive_short_route_timeout(client, auth, project, llm, monkeypatch):
-    monkeypatch.setattr(settings, 'http_request_deadline_seconds', 0.01)
-    llm.reply('concept', CONCEPT, before=lambda: asyncio.sleep(0.04))
+async def test_background_conversation_can_outlive_short_route_timeout(client, auth, project, llm, monkeypatch):
+    monkeypatch.setattr(settings, 'http_request_deadline_seconds', 0.2)
+    llm.reply('concept', CONCEPT, before=lambda: asyncio.sleep(0.3))
     response = await client.post(f'/api/novels/{project}/concept/converse', headers=auth,
                                  json={'user_input': {'value': '测试'}, 'conversation_state': {}})
+    response = await complete_operation(client, auth, response)
     assert response.status_code == 200
     assert response.json()['ai_message'] == CONCEPT['ai_message']
 

@@ -107,6 +107,7 @@
 </template>
 
 <script setup lang="ts">
+import { errorMessage } from '@/utils/errors'
 import { ref, computed } from 'vue'
 import { marked } from 'marked'
 import { useNovelStore } from '@/stores/novel'
@@ -162,7 +163,7 @@ const generateBlueprint = async (resume = true) => {
     await jobs.submit('blueprint', (key, signal) => novelStore.generateBlueprint(key, { signal, resume: resume && !(props.regenerate && !submittedOnce.value) }))
     submittedOnce.value = true
   } catch (error) {
-    globalAlert.showError(error instanceof Error ? error.message : '提交失败，请重试', '蓝图生成')
+    globalAlert.showError(errorMessage(error, '提交失败，请重试'), '蓝图生成')
   } finally {
     submitting.value = false
   }
@@ -171,7 +172,7 @@ const cancel = async () => {
   const job = jobs.activeJobs.value[0]
   if (!job) return
   try { await jobs.cancel(job.id) }
-  catch (error) { globalAlert.showError(error instanceof Error ? error.message : '取消失败', '取消生成') }
+  catch (error) { globalAlert.showError(errorMessage(error, '取消失败'), '取消生成') }
 }
 </script>
 

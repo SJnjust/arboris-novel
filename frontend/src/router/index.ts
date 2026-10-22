@@ -12,6 +12,8 @@ import { useAuthStore } from '@/stores/auth'
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
+    { path: '/detail/:id', redirect: to => ({ path: `/novels/${encodeURIComponent(String(to.params.id))}`, query: to.query, hash: to.hash }) },
+    { path: '/novel/:id', redirect: to => ({ path: `/novels/${encodeURIComponent(String(to.params.id))}/write`, query: to.query, hash: to.hash }) },
     {
       path: '/',
       name: 'workspace-entry',
@@ -31,14 +33,14 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
-      path: '/detail/:id',
+      path: '/novels/:id',
       name: 'novel-detail',
       component: NovelDetail,
       props: true,
       meta: { requiresAuth: true },
     },
     {
-      path: '/novel/:id',
+      path: '/novels/:id/write',
       name: 'writing-desk',
       component: WritingDesk,
       props: true,
@@ -67,6 +69,7 @@ const router = createRouter({
       props: true,
       meta: { requiresAuth: true, requiresAdmin: true },
     },
+    { path: '/:pathMatch(.*)*', name: 'not-found', component: () => import('../views/NotFound.vue') },
     {
       path: '/settings',
       name: 'settings',

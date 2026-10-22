@@ -1,3 +1,4 @@
+from operation_helpers import complete_operation
 import json
 from unittest.mock import AsyncMock
 
@@ -28,12 +29,8 @@ async def test_truncated_json_does_not_replace_or_append_business_data(client, a
         url = f'/api/novels/{ready_project}/' + ('concept/converse' if stage == 'concept' else 'blueprint/generate')
         body = {'user_input': {'value': '测试'}, 'conversation_state': {}} if stage == 'concept' else None
     response = await client.post(url, headers=auth, **({'json': body} if body else {}))
-    if stage == 'screenwriting':
-        assert response.status_code == 202
-        job = await wait_job(response.json()['job_id'])
-        assert job['status'] == 'failed' and job['error']['status_code'] == 500
-    else:
-        assert response.status_code == 500
+    response = await complete_operation(client, auth, response)
+    assert response.status_code == 500
     after = (await client.get(f'/api/novels/{ready_project}', headers=auth)).json()
     assert after == before
     async with database() as session:
@@ -68,10 +65,16 @@ async def test_truncated_import_does_not_create_project_or_versions(client, auth
     monkeypatch.setattr('app.services.llm_service.LLMService.get_llm_response', AsyncMock(side_effect=replies))
     response = await client.post('/api/novels/import', headers=auth,
                                  files={'file': ('novel.txt', '第一章 起点\n有人走进了旧馆。'.encode(), 'text/plain')})
+    response = await complete_operation(client, auth, response)
     assert response.status_code == 500
     assert '输出不完整' in response.json()['detail']
     async with database() as session:
-        assert (await session.scalars(select(NovelProject))).all() == []
+        projects = (await session.scalars(select(NovelProject))).all()
+        assert len(projects) == 1 and projects[0].status == 'draft'
+        from app.models import NovelBlueprint
+        stored = await session.get(NovelBlueprint, projects[0].id)
+        assert stored.title is None and stored.full_synopsis is None
+        assert (await session.scalars(select(ChapterOutline))).all() == []
         assert (await session.scalars(select(ChapterVersion))).all() == []
 
 
@@ -140,6 +143,7 @@ async def test_truncated_optimization_is_rejected_and_preserves_original_version
     monkeypatch.setattr('app.services.llm_service.LLMService.get_llm_response', AsyncMock(return_value='{"optimized_content":"截断正文'))
     response = await client.post('/api/optimizer/optimize', headers=auth,
                                  json={'project_id': ready_project, 'chapter_number': 1, 'dimension': 'dialogue'})
+    response = await complete_operation(client, auth, response)
     assert response.status_code == 500
     assert '输出不完整' in response.json()['detail']
     async with database() as session:

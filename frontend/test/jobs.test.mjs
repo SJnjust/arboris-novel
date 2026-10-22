@@ -119,7 +119,7 @@ test('useJob stops retrying failed polls and aborts in-flight work on disposal',
   const state = scope.run(() => env.useJob(() => 'project-1'))
   await settle()
   for (let attempt = 0; attempt < 3; attempt++) await env.clock.next()
-  assert.match(state.error.value, /offline/)
+  assert.equal(state.error.value, '任务状态暂时不可用，请重试')
   assert.equal(env.clock.timers.size, 0)
   mode = 'wait'
   void state.recover()
@@ -163,7 +163,7 @@ test('terminal refresh failures have bounded retries and keep the recoverable id
   for (let retry = 0; retry < 3; retry++) await env.clock.next()
   assert.equal(attempts, 4)
   assert.equal(env.clock.timers.size, 0)
-  assert.match(state.error.value, /refresh unavailable/)
+  assert.equal(state.error.value, '任务状态暂时不可用，请重试')
   assert.deepEqual(JSON.parse(saved.getItem(key)).ids, ['job-1'])
   scope.stop()
 })
@@ -212,22 +212,24 @@ test('disposal aborts an in-flight cancel without reporting a false cancellation
   assert.equal(env.clock.timers.size, 0)
 })
 
-test('legacy synchronous APIs do not install a client deadline', async () => {
+test('migrated AI submissions have bounded client deadlines; explicit unlimited requests remain abortable', async () => {
   const requests = []
   const env = await runtime((url, options) => new Promise(resolve => requests.push(() => resolve(json({ id: 'project-1' })))))
   const api = env.api.NovelAPI
   const calls = [
-    () => api.importNovel(new Blob(['正文'])),
+    () => api.importNovel(new Blob(['正文']), 'import-key'),
     () => api.converseConcept('project-1', { value: '测试' }),
-    () => api.generateChapterOutline('project-1', 2, 1),
-    () => api.evaluateChapter('project-1', 1),
+    () => api.generateChapterOutline('project-1', 2, 1, 'outline-key'),
+    () => api.evaluateChapter('project-1', 1, 'evaluate-key'),
     () => api.selectChapterVersion('project-1', 1, 0),
-    () => env.api.OptimizerAPI.optimizeChapter({ project_id: 'project-1', chapter_number: 1, dimension: 'dialogue' })
+    () => env.api.OptimizerAPI.optimizeChapter({ project_id: 'project-1', chapter_number: 1, dimension: 'dialogue' }, 'optimize-key')
   ]
   for (const call of calls) {
     const pending = call()
     await settle()
-    assert.equal(env.clock.timers.size, 0)
+    const url = env.calls.at(-1).url
+    const unlimited = url.endsWith('/concept/converse') || url.endsWith('/chapters/select')
+    assert.equal(env.clock.timers.size, unlimited ? 0 : 1)
     requests.shift()()
     await pending
   }

@@ -6,7 +6,7 @@
     enter-from-class="opacity-0"
     leave-to-class="opacity-0"
   >
-    <div v-if="show" class="md-dialog-overlay" @click.self="$emit('close')">
+    <div v-if="show" class="md-dialog-overlay" @click.self="requestClose">
       <transition
         enter-active-class="transition-all duration-300"
         leave-active-class="transition-all duration-200"
@@ -18,7 +18,7 @@
           <div class="md-dialog-header flex items-center justify-between">
             <h3 class="md-dialog-title">编辑 {{ title }}</h3>
             <button 
-              @click="$emit('close')" 
+              @click="requestClose"
               class="md-icon-btn md-ripple"
               aria-label="关闭"
             >
@@ -48,7 +48,7 @@
           <!-- Material 3 Dialog Actions -->
           <div class="md-dialog-actions" style="border-top: 1px solid var(--md-outline-variant);">
             <button 
-              @click="$emit('close')" 
+              @click="requestClose"
               class="md-btn md-btn-text md-ripple"
             >
               取消
@@ -70,6 +70,7 @@
 </template>
 
 <script setup lang="ts">
+import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 import { ref, watch, defineProps, defineEmits } from 'vue';
 import ChapterOutlineEditor from './ChapterOutlineEditor.vue';
 import KeyLocationsEditor from './KeyLocationsEditor.vue';
@@ -101,6 +102,9 @@ watch(() => props.show, (isVisible) => {
     }
   }
 }, { immediate: true });
+
+const editGuard = useUnsavedChanges(() => props.show && JSON.stringify(editableContent.value) !== JSON.stringify(props.content || ''))
+const requestClose = async () => { if (await editGuard.confirmLeave()) emit('close') }
 
 const saveChanges = () => {
   emit('save', { field: props.field, content: editableContent.value });

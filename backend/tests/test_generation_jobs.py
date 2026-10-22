@@ -149,7 +149,7 @@ async def test_backfill_is_recent_bounded_and_parallel_without_transactions(clie
         assert chapters[4].status == "waiting_for_confirm"
 
 
-async def test_select_uses_actual_ingestion_with_outline_title_and_user(client, auth, ready_project, database, monkeypatch):
+async def test_select_uses_actual_ingestion_with_outline_title_and_user(client, auth, ready_project, database, monkeypatch, job_runner):
     from conftest import REAL_INGEST_CHAPTER
     from app.services import chapter_ingest_service
     from app.services.chapter_ingest_service import ChapterIngestionService
@@ -158,6 +158,7 @@ async def test_select_uses_actual_ingestion_with_outline_title_and_user(client, 
     monkeypatch.setattr(settings, "vector_db_url", "file:fixture-only")
     monkeypatch.setattr(chapter_ingest_service, "VectorStoreService", lambda: vector)
     monkeypatch.setattr(ChapterIngestionService, "ingest_chapter", REAL_INGEST_CHAPTER)
+    monkeypatch.setattr(LLMService, "get_summary", AsyncMock(return_value="选定正文的新摘要"))
     embeddings = AsyncMock(return_value=[0.1, 0.2])
     monkeypatch.setattr(LLMService, "get_embedding", embeddings)
     async with database() as session:
@@ -169,6 +170,7 @@ async def test_select_uses_actual_ingestion_with_outline_title_and_user(client, 
     response = await client.post(f"/api/writer/novels/{ready_project}/chapters/select", headers=auth,
                                  json={"chapter_number": 1, "version_index": 0})
     assert response.status_code == 200
+    await asyncio.gather(*job_runner.owned_tasks)
     vector.delete_by_chapters.assert_awaited_once_with(ready_project, [1])
     vector.upsert_chunks.assert_awaited_once()
     record = vector.upsert_chunks.await_args.kwargs["records"][0]
@@ -231,8 +233,7 @@ async def test_guardrail_violation_saves_the_rewritten_version(client, auth, rea
         assert (await session.scalars(select(Chapter))).one().status == "waiting_for_confirm"
 
 
-async def test_edit_maintenance_completes_summary_and_ingestion_without_name_error(ready_project, llm, database):
-    from app.api.routers.writer import _refresh_edit_summary_and_ingest
+async def test_edit_maintenance_completes_summary_and_ingestion_without_name_error(ready_project, llm, database, job_runner):
     from app.services.chapter_ingest_service import ChapterIngestionService
     content = "编辑后的正文保留了新线索。"
     async with database() as session:
@@ -245,9 +246,12 @@ async def test_edit_maintenance_completes_summary_and_ingestion_without_name_err
         chapter.selected_version_id = version.id
         await session.commit()
     llm.reply("extraction", "<think>省略</think>编辑后的摘要")
-    await _refresh_edit_summary_and_ingest(ready_project, 1, content, 1, session_factory=database)
-    ChapterIngestionService.ingest_chapter.assert_awaited_once_with(
-        project_id=ready_project, chapter_number=1, title="旧馆", content=content, summary=None, user_id=1)
+    job_runner.maintain_chapter(ready_project, 1, 1)
+    await asyncio.gather(*job_runner.owned_tasks)
+    ChapterIngestionService.ingest_chapter.assert_awaited_once()
+    arguments = ChapterIngestionService.ingest_chapter.await_args.kwargs
+    assert callable(arguments.pop("is_current"))
+    assert arguments == dict(project_id=ready_project, chapter_number=1, title="旧馆", content=content, summary="编辑后的摘要", user_id=1)
     async with database() as session:
         chapter = (await session.scalars(select(Chapter))).one()
         assert chapter.real_summary == "编辑后的摘要" and chapter.status == "successful"

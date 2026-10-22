@@ -26,7 +26,7 @@ from sqlalchemy.orm import selectinload
 from ...core.config import settings
 from ...core.dependencies import get_current_user
 from ...core.request_deadline import RequestDeadlineRoute, request_deadline
-from ...db.session import AsyncSessionLocal, get_session
+from ...db.session import get_session
 from ...models.novel import Chapter, ChapterOutline, ChapterVersion
 from ...schemas.novel import (
     Chapter as ChapterSchema,
@@ -43,7 +43,6 @@ from ...schemas.novel import (
 from ...schemas.user import UserInDB
 from ...schemas.job import JobSubmitted
 from ...services.job_service import JobRunner, get_job_runner
-from ...services.chapter_ingest_service import ChapterIngestionService
 from ...services.llm_service import LLMService
 from ...services.novel_service import NovelService
 from ...services.prompt_service import PromptService
@@ -67,65 +66,6 @@ async def _load_project_schema(service: NovelService, project_id: str, user_id: 
 
 
 
-async def _refresh_edit_summary_and_ingest(
-    project_id: str,
-    chapter_number: int,
-    content: str,
-    user_id: Optional[int],
-    session_factory=AsyncSessionLocal,
-) -> None:
-    async with session_factory() as session:
-        llm_service = LLMService(session)
-
-        stmt = (
-            select(Chapter)
-            .options(selectinload(Chapter.selected_version))
-            .where(
-                Chapter.project_id == project_id,
-                Chapter.chapter_number == chapter_number,
-            )
-        )
-        result = await session.execute(stmt)
-        chapter = result.scalars().first()
-        if not chapter:
-            return
-
-        summary_text = None
-        try:
-            summary = await llm_service.get_summary(
-                content,
-                temperature=0.15,
-                user_id=user_id,
-            )
-            summary_text = remove_think_tags(summary)
-        except Exception as exc:
-            logger.warning("编辑章节后自动生成摘要失败: %s", exc)
-
-        if summary_text and chapter.selected_version and chapter.selected_version.content == content:
-            chapter.real_summary = summary_text
-            await session.commit()
-
-        try:
-            outline_stmt = select(ChapterOutline).where(
-                ChapterOutline.project_id == project_id,
-                ChapterOutline.chapter_number == chapter_number,
-            )
-            outline_result = await session.execute(outline_stmt)
-            outline = outline_result.scalars().first()
-            title = outline.title if outline and outline.title else f"第{chapter_number}章"
-            ingest_service = ChapterIngestionService(llm_service=llm_service)
-            await ingest_service.ingest_chapter(
-                project_id=project_id,
-                chapter_number=chapter_number,
-                title=title,
-                content=content,
-                summary=None,
-                user_id=user_id or 0,
-            )
-            logger.info("章节 %s 向量化入库成功", chapter_number)
-        except Exception as exc:
-            logger.error("章节 %s 向量化入库失败: %s", chapter_number, exc)
-
 @router.post("/novels/{project_id}/chapters/generate", response_model=JobSubmitted, status_code=202)
 @request_deadline
 async def generate_chapter(
@@ -148,11 +88,13 @@ async def generate_chapter(
 
 
 @router.post("/novels/{project_id}/chapters/select", response_model=NovelProjectSchema)
+@request_deadline
 async def select_chapter_version(
     project_id: str,
     request: SelectVersionRequest,
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
+    runner: JobRunner = Depends(get_job_runner),
 ) -> NovelProjectSchema:
     novel_service = NovelService(session)
     project = await novel_service.ensure_project_owner(project_id, current_user.id)
@@ -168,32 +110,31 @@ async def select_chapter_version(
         await session.rollback()
         raise HTTPException(status_code=400, detail="选中的版本内容为空，无法确认为最终版")
 
-    # 异步触发向量化入库
-    try:
-        outline = await novel_service.get_outline(project_id, request.chapter_number)
-        title = outline.title if outline and outline.title else f"第{request.chapter_number}章"
-        summary = chapter.real_summary
-        await session.commit()
-        llm_service = LLMService(session)
-        ingest_service = ChapterIngestionService(llm_service=llm_service)
-        await ingest_service.ingest_chapter(
-            project_id=project_id,
-            chapter_number=request.chapter_number,
-            title=title,
-            content=selected_version.content,
-            summary=summary,
-            user_id=current_user.id,
-        )
-        logger.info(f"章节 {request.chapter_number} 向量化入库成功")
-    except Exception as e:
-        logger.error(f"章节 {request.chapter_number} 向量化入库失败: {e}")
-        # 向量化失败不应阻止版本选择，仅记录错误
+    chapter.real_summary = None
+    await session.commit()
+    runner.maintain_chapter(project_id, request.chapter_number, current_user.id)
 
     return await _load_project_schema(novel_service, project_id, current_user.id)
 
 
-@router.post("/novels/{project_id}/chapters/evaluate", response_model=NovelProjectSchema)
+@router.post("/novels/{project_id}/chapters/evaluate", response_model=JobSubmitted, status_code=202)
+@request_deadline
 async def evaluate_chapter(
+    project_id: str,
+    request: EvaluateChapterRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+    runner: JobRunner = Depends(get_job_runner),
+    idempotency_key: Optional[str] = Header(None, min_length=1, max_length=128),
+) -> JobSubmitted:
+    await NovelService(session).ensure_project_owner(project_id, current_user.id)
+    await session.rollback()
+    job = await runner.submit(project_id=project_id, user_id=current_user.id, kind="chapter_evaluate",
+                              target=str(request.chapter_number), payload=request.model_dump(), idempotency_key=idempotency_key)
+    return JobSubmitted(job_id=job.id)
+
+
+async def _execute_evaluate_chapter(
     project_id: str,
     request: EvaluateChapterRequest,
     session: AsyncSession = Depends(get_session),
@@ -260,6 +201,7 @@ async def evaluate_chapter(
         )
         return await _load_project_schema(novel_service, project_id, current_user.id)
 
+    version_id = version_to_evaluate.id
     try:
         evaluation_raw = await llm_service.get_llm_response(
             system_prompt=eval_prompt,
@@ -305,9 +247,9 @@ async def evaluate_chapter(
             from app.models.novel import ChapterEvaluation
             evaluation_record = ChapterEvaluation(
                 chapter_id=chapter.id,
-                version_id=version_to_evaluate.id,
+                version_id=version_id,
                 decision="failed",
-                feedback=f"评审失败: {str(exc)}",
+                feedback="评审失败，请稍后重试",
                 score=None
             )
             session.add(evaluation_record)
@@ -315,7 +257,7 @@ async def evaluate_chapter(
             await session.commit()
         
         # 抛出异常，让前端知道评审失败
-        raise HTTPException(status_code=500, detail=f"评审失败: {str(exc)}")
+        raise HTTPException(status_code=500, detail="评审失败，请稍后重试")
     
     return await _load_project_schema(novel_service, project_id, current_user.id)
 
@@ -363,8 +305,24 @@ async def delete_chapters(
     return await _load_project_schema(novel_service, project_id, current_user.id)
 
 
-@router.post("/novels/{project_id}/chapters/outline", response_model=NovelProjectSchema)
+@router.post("/novels/{project_id}/chapters/outline", response_model=JobSubmitted, status_code=202)
+@request_deadline
 async def generate_chapters_outline(
+    project_id: str,
+    request: GenerateOutlineRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+    runner: JobRunner = Depends(get_job_runner),
+    idempotency_key: Optional[str] = Header(None, min_length=1, max_length=128),
+) -> JobSubmitted:
+    await NovelService(session).ensure_project_owner(project_id, current_user.id)
+    await session.rollback()
+    job = await runner.submit(project_id=project_id, user_id=current_user.id, kind="outline_extend",
+                              target=str(request.start_chapter), payload=request.model_dump(), idempotency_key=idempotency_key)
+    return JobSubmitted(job_id=job.id)
+
+
+async def _execute_generate_chapters_outline(
     project_id: str,
     request: GenerateOutlineRequest,
     session: AsyncSession = Depends(get_session),
@@ -407,23 +365,23 @@ async def generate_chapters_outline(
     try:
         data = parse_llm_json(response, allow_lossy=False)
         new_outlines = normalize_outline_batch(data, request.start_chapter, end)
-        async with runner.edit_plan(project_id):
-            current = await novel_service.ensure_project_owner(project_id, current_user.id)
-            protected = written_numbers(current)
-            for item in new_outlines:
-                if item["chapter_number"] not in protected:
-                    await novel_service.update_or_create_outline(project_id, **item, volume_number=volume_number)
-            await session.commit()
+        current = await novel_service.ensure_project_owner(project_id, current_user.id)
+        protected = written_numbers(current)
+        for item in new_outlines:
+            if item["chapter_number"] not in protected:
+                await novel_service.update_or_create_outline(project_id, **item, volume_number=volume_number)
+        await session.commit()
     except HTTPException:
         raise
     except Exception as exc:
         logger.exception("生成大纲解析失败: %s", exc)
-        raise HTTPException(status_code=500, detail=f"大纲生成失败: {str(exc)}")
+        raise HTTPException(status_code=500, detail="大纲生成失败，请稍后重试")
 
     return await _load_project_schema(novel_service, project_id, current_user.id)
 
 
 @router.post("/novels/{project_id}/chapters/edit", response_model=NovelProjectSchema)
+@request_deadline
 async def edit_chapter_content(
     project_id: str,
     request: EditChapterRequest,
@@ -455,19 +413,19 @@ async def edit_chapter_content(
         await session.flush()
         chapter.selected_version_id = target_version.id
     
+    chapter.selected_version = target_version
+    chapter.real_summary = None
     chapter.status = "successful"
     chapter.word_count = len(request.content or "")
     await session.commit()
 
-    runner.own(_refresh_edit_summary_and_ingest(
-        project_id, request.chapter_number, request.content, current_user.id,
-        session_factory=runner.session_factory,
-    ))
+    runner.maintain_chapter(project_id, request.chapter_number, current_user.id)
 
     return await _load_project_schema(novel_service, project_id, current_user.id)
 
 
 @router.post("/novels/{project_id}/chapters/edit-fast", response_model=ChapterSchema)
+@request_deadline
 async def edit_chapter_content_fast(
     project_id: str,
     request: EditChapterRequest,
@@ -498,14 +456,13 @@ async def edit_chapter_content_fast(
         await session.flush()
         chapter.selected_version_id = target_version.id
 
+    chapter.selected_version = target_version
+    chapter.real_summary = None
     chapter.status = "successful"
     chapter.word_count = len(request.content or "")
     await session.commit()
 
-    runner.own(_refresh_edit_summary_and_ingest(
-        project_id, request.chapter_number, request.content, current_user.id,
-        session_factory=runner.session_factory,
-    ))
+    runner.maintain_chapter(project_id, request.chapter_number, current_user.id)
 
     stmt = (
         select(Chapter)

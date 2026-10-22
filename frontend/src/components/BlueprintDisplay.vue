@@ -103,7 +103,7 @@ const volumeUpdated = (project: NovelProject) => {
 const isSaving = ref(false)
 
 const confirmRegenerate = async () => {
-  const confirmed = await globalAlert.showConfirm('重新规划会更新设定及未写正文的大纲，已有正文对应的大纲会保留。确定继续吗？', '重新生成确认')
+  const confirmed = await globalAlert.showConfirm(`重新生成会替换设定和第 1–${Math.max(props.blueprint?.total_chapters || 0, ...(props.blueprint?.chapter_outline || []).map(row => row.chapter_number))} 章中未写正文的大纲及卷规划；已有正文和对应大纲保留。确定继续吗？`, '重新生成确认')
   if (confirmed) {
     emit('regenerate')
   }

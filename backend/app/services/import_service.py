@@ -29,7 +29,7 @@ class ImportService:
         self.llm_service = LLMService(session)
         self.prompt_service = PromptService(session)
 
-    async def import_novel_from_file(self, user_id: int, file: UploadFile) -> str:
+    async def import_novel_from_file(self, user_id: int, file: UploadFile, *, project_id: str | None = None, progress=None) -> str:
         """
         导入小说文件，执行分章、分析并创建项目。
         返回新创建的项目ID。
@@ -95,10 +95,14 @@ class ImportService:
         
         # 3. 分阶段分析
         # 阶段一：先筛选出确定的角色名单 (Stable Census)
+        if progress:
+            await progress("import_characters", 40)
         verified_characters = await self._filter_characters_only(user_id, potential_characters, char_highlights_text)
         logger.info(f"角色筛选完成，潜在 {len(potential_characters)} -> 确认 {len(verified_characters)}")
         
         # 阶段二：详细分析 (Deep Profiling)
+        if progress:
+            await progress("import_analysis", 60)
         blueprint_data = await self._analyze_content(
             user_id, 
             plot_sample_text, 
@@ -111,7 +115,13 @@ class ImportService:
         # 4. 创建项目
         title = blueprint_data.title or file.filename.rsplit('.', 1)[0]
         initial_prompt = f"导入自文件: {file.filename}"
-        project = await self.novel_service.create_project(user_id, title, initial_prompt)
+        if progress:
+            await progress("import_saving", 85)
+        if project_id:
+            project = await self.novel_service.ensure_project_owner(project_id, user_id)
+            project.title, project.initial_prompt = title, initial_prompt
+        else:
+            project = await self.novel_service.create_project(user_id, title, initial_prompt)
         
         # 5. 保存蓝图
         # 确保 blueprint_data 中的 chapter_outline 包含所有章节（如果AI没返回全部）
@@ -154,8 +164,10 @@ class ImportService:
         
         return project.id
 
-    async def _read_file_content(self, file: UploadFile) -> str:
-        content_bytes = await file.read()
+    async def _read_file_content(self, file: UploadFile, *, project_id: str | None = None, progress=None) -> str:
+        content_bytes = await file.read(8 * 1024 * 1024 + 1)
+        if len(content_bytes) > 8 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="文件过大，请上传不超过 8MB 的 TXT 文件")
         try:
             return content_bytes.decode('utf-8')
         except UnicodeDecodeError:
@@ -386,7 +398,7 @@ class ImportService:
             raise
         except Exception as e:
             logger.error(f"角色筛选阶段失败: {e}", exc_info=True)
-            return [] # 失败时返回空，后续流程将回退到仅使用潜在名单
+            raise HTTPException(status_code=500, detail="导入角色分析失败，请稍后重试") from e
 
     async def _analyze_content(self, user_id: int, sample_text: str, chapter_titles: List[str], potential_characters: List[str] = [], char_highlights: str = "", verified_characters: List[str] = []) -> Blueprint:
         prompt_template = await self.prompt_service.get_prompt("import_analysis")
@@ -518,9 +530,4 @@ class ImportService:
             raise
         except Exception as e:
             logger.error(f"AI 分析失败: {e}", exc_info=True)
-            # 分析失败时返回一个空的 Blueprint，但保留标题等基本信息
-            return Blueprint(
-                title="导入的项目",
-                one_sentence_summary="AI分析失败，请手动补充",
-                chapter_outline=[]
-            )
+            raise HTTPException(status_code=500, detail="导入分析失败，请稍后重试") from e

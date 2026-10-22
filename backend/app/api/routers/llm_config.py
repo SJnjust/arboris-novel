@@ -5,6 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
 
+import asyncio
+from ...core.request_deadline import RequestDeadlineRoute, request_deadline
 from ...core.dependencies import get_current_user
 from ...db.session import get_session
 from ...schemas.llm_config import LLMConfigCreate, LLMConfigRead, ModelListRequest
@@ -14,7 +16,7 @@ from ...services.llm_config_service import LLMConfigService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/llm-config", tags=["LLM Configuration"])
+router = APIRouter(prefix="/api/llm-config", tags=["LLM Configuration"], route_class=RequestDeadlineRoute)
 
 
 def get_llm_config_service(session: AsyncSession = Depends(get_session)) -> LLMConfigService:
@@ -57,6 +59,7 @@ async def delete_llm_config(
 
 
 @router.post("/models", response_model=List[str])
+@request_deadline
 async def list_models(
     payload: ModelListRequest,
     service: LLMConfigService = Depends(get_llm_config_service),
@@ -64,10 +67,11 @@ async def list_models(
 ) -> List[str]:
     """获取可用的模型列表"""
     try:
-        models = await service.get_available_models(
-            api_key=payload.llm_provider_api_key,
-            base_url=payload.llm_provider_url
-        )
+        async with asyncio.timeout(35):
+            models = await service.get_available_models(
+                api_key=payload.llm_provider_api_key,
+                base_url=payload.llm_provider_url
+            )
         logger.info("用户 %s 获取模型列表，返回 %d 个模型", current_user.id, len(models))
         return models
     except Exception as e:

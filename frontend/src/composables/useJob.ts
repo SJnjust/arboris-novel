@@ -1,3 +1,4 @@
+import { errorMessage } from '@/utils/errors'
 import { computed, onScopeDispose, ref, watch } from 'vue'
 import { ApiError, NovelAPI, type AIJob, type JobSubmitted } from '@/api/novel'
 
@@ -85,7 +86,7 @@ export function useJob(projectId: () => string | undefined, options: Options = {
       const count = (failures.get(id) || 0) + 1
       failures.set(id, count)
       if (count <= 3) schedule(id, interval, token)
-      else error.value = reason instanceof Error ? reason.message : '任务状态暂时不可用，请重试'
+      else error.value = errorMessage(reason, '任务状态暂时不可用，请重试')
     } finally {
       requests.delete(controller)
       if (inFlight.get(id) === controller) inFlight.delete(id)
@@ -119,7 +120,7 @@ export function useJob(projectId: () => string | undefined, options: Options = {
       save()
       options.onRecovered?.(matching)
     } catch (reason) {
-      if (!controller.signal.aborted && token === epoch && !disposed) error.value = reason instanceof Error ? reason.message : '恢复任务失败，请重试'
+      if (!controller.signal.aborted && token === epoch && !disposed) error.value = errorMessage(reason, '恢复任务失败，请重试')
     } finally { requests.delete(controller) }
     if (token === epoch && !disposed) for (const id of ids) void poll(id, 1500, token)
   }
@@ -155,6 +156,13 @@ export function useJob(projectId: () => string | undefined, options: Options = {
     } finally { requests.delete(controller) }
   }
 
+  async function track(id: string) {
+    if (!projectId() || disposed) return
+    ids.add(id)
+    save()
+    await poll(id, 1500, epoch)
+  }
+
   async function cancel(id: string) {
     cancelling.value = true
     const token = epoch
@@ -187,5 +195,5 @@ export function useJob(projectId: () => string | undefined, options: Options = {
     disposed = true; epoch++; stop()
     if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', visibility)
   })
-  return { jobs, activeJobs, error, cancelling, submit, cancel, recover }
+  return { jobs, activeJobs, error, cancelling, submit, track, cancel, recover }
 }
