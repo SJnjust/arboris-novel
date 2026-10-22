@@ -1,7 +1,7 @@
 // AIMETA P=小说状态_当前小说数据管理|R=currentNovel_chapters_fetch|NR=不含API调用|E=store:novel|X=internal|A=useNovelStore|D=pinia|S=none|RD=./README.ai
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { NovelProject, NovelProjectSummary, ConverseResponse, ConceptStreamOptions, BlueprintGenerationResponse, Blueprint, DeleteNovelsResponse, ChapterOutline, JobSubmitted, RequestOptions } from '@/api/novel'
+import type { NovelProject, NovelProjectSummary, ConverseResponse, ConceptStreamOptions, Blueprint, DeleteNovelsResponse, ChapterOutline, JobSubmitted, RequestOptions } from '@/api/novel'
 import { NovelAPI } from '@/api/novel'
 
 export const useNovelStore = defineStore('novel', () => {
@@ -111,7 +111,7 @@ export const useNovelStore = defineStore('novel', () => {
     }
   }
 
-  async function generateBlueprint(): Promise<BlueprintGenerationResponse> {
+  async function generateBlueprint(key?: string, options: RequestOptions & { resume?: boolean } = {}): Promise<JobSubmitted> {
     // Generate blueprint from conversation history
     isLoading.value = true
     error.value = null
@@ -119,7 +119,7 @@ export const useNovelStore = defineStore('novel', () => {
       if (!currentProject.value) {
         throw new Error('没有当前项目')
       }
-      return await NovelAPI.generateBlueprint(currentProject.value.id)
+      return await NovelAPI.generateBlueprint(currentProject.value.id, key, options)
     } catch (err) {
       error.value = err instanceof Error ? err.message : '生成蓝图失败'
       throw err

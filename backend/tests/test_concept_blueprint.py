@@ -29,12 +29,20 @@ async def test_concept_round_persists_ordered_conversation(client, auth, project
     assert call["messages"][-1].role == "user"
 
 
-async def test_blueprint_generation_and_replacement_are_persistent(client, auth, project, llm, blueprint, database):
+async def test_blueprint_generation_and_replacement_are_persistent(client, auth, project, llm, blueprint, database, wait_job):
     assert (await converse(client, auth, project, llm)).status_code == 200
-    llm.reply("screenwriting", blueprint)
+    llm.reply("screenwriting", {**blueprint, "target_chapter_range": {"min": 1, "max": 1}})
+    llm.reply("volume_planning", {"total_chapters": 1, "volumes": [{"volume_number": 1, "title": "第一卷", "summary": "旧馆调查", "start_chapter": 1, "end_chapter": 1}]})
+    llm.reply("volume_outline", {"chapters": blueprint["chapter_outline"]})
     response = await client.post(f"/api/novels/{project}/blueprint/generate", headers=auth)
+    assert response.status_code == 202
+    job = await wait_job(response.json()["job_id"])
+    assert job["status"] == "succeeded", job["error"]
+    assert job["progress"] == 100
+    response = await client.get(f"/api/novels/{project}", headers=auth)
     assert response.status_code == 200
-    assert response.json()["blueprint"]["chapter_outline"] == blueprint["chapter_outline"]
+    assert response.json()["blueprint"]["chapter_outline"] == [{**row, "volume_number": 1} for row in blueprint["chapter_outline"]]
+    assert response.json()["blueprint"]["volumes"][0]["status"] == "outlined"
     async with database() as session:
         stored = await session.get(NovelProject, project)
         assert (stored.title, stored.status) == (blueprint["title"], "blueprint_ready")
@@ -49,7 +57,7 @@ async def test_blueprint_generation_and_replacement_are_persistent(client, auth,
     assert saved.status_code == 200
     fresh = (await client.get(f"/api/novels/{project}", headers=auth)).json()
     assert fresh["title"] == "新标题"
-    assert fresh["blueprint"]["chapter_outline"] == replacement["chapter_outline"]
+    assert fresh["blueprint"]["chapter_outline"] == [{**row, "volume_number": 1} for row in replacement["chapter_outline"]]
     async with database() as session:
         assert [row.name for row in (await session.scalars(select(BlueprintCharacter))).all()] == ["新主角"]
         assert (await session.scalars(select(BlueprintRelationship))).all() == []
@@ -63,14 +71,20 @@ async def test_blueprint_requires_conversation(client, auth, project):
 
 
 @pytest.mark.parametrize("stage", ["concept", "screenwriting"])
-async def test_invalid_json_keeps_existing_state(client, auth, project, llm, database, stage):
+async def test_invalid_json_keeps_existing_state(client, auth, project, llm, database, stage, wait_job):
     if stage == "screenwriting":
         await converse(client, auth, project, llm)
     llm.reply(stage, "this is not JSON")
     endpoint = "concept/converse" if stage == "concept" else "blueprint/generate"
     response = await client.post(f"/api/novels/{project}/{endpoint}", headers=auth, **({"json": {"user_input": {"value": "test"}, "conversation_state": {}}} if stage == "concept" else {}))
-    assert response.status_code == 500
-    assert "AI 返回的内容格式不正确" in response.json()["detail"]
+    if stage == "screenwriting":
+        assert response.status_code == 202
+        job = await wait_job(response.json()["job_id"])
+        assert job["status"] == "failed" and job["error"]["status_code"] == 500
+        assert "AI 返回的内容格式不正确" in job["error"]["detail"]
+    else:
+        assert response.status_code == 500
+        assert "AI 返回的内容格式不正确" in response.json()["detail"]
     async with database() as session:
         stored = await session.get(NovelBlueprint, project)
         # create_project already inserts an empty blueprint; failure must not fill it.

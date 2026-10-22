@@ -76,7 +76,7 @@ export async function runtime(fetcher, saved = storage()) {
     const code = ts.transpileModule(`${script}\n${suffix}`, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText
     return new SourceTextModule(code, { context, identifier: name, initializeImportMeta: meta => { meta.env = { MODE: 'production' } } })
   }
-  for (const [name, path] of [['@/api/novel', '../src/api/novel.ts'], ['useJob', '../src/composables/useJob.ts']]) {
+  for (const [name, path] of [['@/api/novel', '../src/api/novel.ts'], ['@/utils/volumes', '../src/utils/volumes.ts'], ['useJob', '../src/composables/useJob.ts'], ['@/composables/useVolumeJobs', '../src/composables/useVolumeJobs.ts']]) {
     const source = await readFile(new URL(path, import.meta.url), 'utf8')
     const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText
     const module = new SourceTextModule(code, { context, identifier: name, initializeImportMeta: meta => { meta.env = { MODE: 'production' } } })
@@ -86,9 +86,13 @@ export async function runtime(fetcher, saved = storage()) {
       return modules.get(specifier)
     })
     await module.evaluate()
+    if (name === 'useJob') {
+      modules.set('@/composables/useJob', module)
+      modules.set('./useJob', module)
+    }
   }
   return { api: modules.get('@/api/novel').namespace, useJob: modules.get('useJob').namespace.useJob,
-    clock, calls, document, storage: saved, redirects, auth, vue,
+    clock, calls, document, storage: saved, redirects, auth, vue, volumes: modules.get('@/utils/volumes').namespace,
     async novelStore() {
       pinia.setActivePinia(pinia.createPinia())
       modules.set('pinia', synthetic(pinia))
@@ -102,7 +106,7 @@ export async function runtime(fetcher, saved = storage()) {
       const emitted = []
       context.defineEmits = () => (...args) => emitted.push(args)
       modules.set('@/stores/novel', synthetic({ useNovelStore: () => store }))
-      modules.set('vue-router', synthetic({ useRouter: () => ({ push: path => redirects.push(path) }), useRoute: () => ({ query: {} }) }))
+      modules.set('vue-router', synthetic({ useRouter: () => ({ push: path => redirects.push(path), replace: path => redirects.push(path) }), useRoute: () => ({ query: {} }) }))
       modules.set('@/composables/useAlert', synthetic({ globalAlert: alerts }))
       modules.set('marked', synthetic({ marked }))
       const mounted = []

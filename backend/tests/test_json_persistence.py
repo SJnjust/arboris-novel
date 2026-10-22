@@ -16,7 +16,7 @@ from test_concept_blueprint import converse
     ('screenwriting', '{"title":"不得覆盖","chapter_outline":[{"chapter_number":2,"title":"半份","summary":"片段"},{"chapter_number":'),
     ('outline_generation', '{"chapters":[{"chapter_number":2,"title":"不得追加","summary":"片段"},{"chapter_number":'),
 ])
-async def test_truncated_json_does_not_replace_or_append_business_data(client, auth, ready_project, llm, database, stage, partial):
+async def test_truncated_json_does_not_replace_or_append_business_data(client, auth, ready_project, llm, database, stage, partial, wait_job):
     if stage == 'screenwriting':
         assert (await converse(client, auth, ready_project, llm)).status_code == 200
     before = (await client.get(f'/api/novels/{ready_project}', headers=auth)).json()
@@ -28,7 +28,12 @@ async def test_truncated_json_does_not_replace_or_append_business_data(client, a
         url = f'/api/novels/{ready_project}/' + ('concept/converse' if stage == 'concept' else 'blueprint/generate')
         body = {'user_input': {'value': '测试'}, 'conversation_state': {}} if stage == 'concept' else None
     response = await client.post(url, headers=auth, **({'json': body} if body else {}))
-    assert response.status_code == 500
+    if stage == 'screenwriting':
+        assert response.status_code == 202
+        job = await wait_job(response.json()['job_id'])
+        assert job['status'] == 'failed' and job['error']['status_code'] == 500
+    else:
+        assert response.status_code == 500
     after = (await client.get(f'/api/novels/{ready_project}', headers=auth)).json()
     assert after == before
     async with database() as session:

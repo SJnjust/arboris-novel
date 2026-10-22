@@ -21,3 +21,6 @@ AILIST NAME=blueprint_service.py|K=file|P=章节蓝图服务_蓝图元数据管�
 AILIST NAME=job_service.py|K=file|P=后台任务调度_准入_取消_恢复|E=JobRunner|A=强引用_幂等_并发_心跳
 AILIST NAME=chapter_generation_service.py|K=file|P=章节生成后台流水线|E=ChapterGenerationService|A=摘要_规划_并行版本_持久化
 AILIST NAME=concept_service.py|K=file|P=灵感对话共享流程|E=ConceptService|A=历史裁剪_幂等_SSE_断连取消
+AILIST NAME=volume_generation_service.py|K=file|P=分卷蓝图后台任务|E=VolumeGenerationService|A=核心_卷规划_批次cursor_续跑
+AILIST NAME=volume_service.py|K=file|P=卷数据与保护|E=VolumeService|A=兼容单卷_区间校验_正文保护
+AILIST NAME=volume_planning.py|K=file|P=规划校验与上下文|E=normalize_volume_plan_normalize_outline_batch|A=边界_去重_有界上下文

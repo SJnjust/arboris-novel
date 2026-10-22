@@ -94,6 +94,7 @@ from ..models import (
     NovelConversation,
     NovelProject,
 )
+from ..services.volume_service import VolumeService, serialize_volumes, validate_ranges, protect_assignments, volume_for, written_numbers
 from ..repositories.novel_repository import NovelRepository
 from ..schemas.admin import AdminNovelSummary
 from ..schemas.novel import (
@@ -169,7 +170,7 @@ class NovelService:
             genre = blueprint.genre if blueprint and blueprint.genre else "未知"
             outlines = project.outlines
             chapters = project.chapters
-            total = len(outlines) or len(chapters)
+            total = max(blueprint.total_chapters if blueprint else 0, max((row.chapter_number for row in outlines), default=0), max((row.chapter_number for row in chapters), default=0))
             completed = sum(1 for chapter in chapters if chapter.selected_version_id)
             summaries.append(
                 NovelProjectSummary(
@@ -191,7 +192,7 @@ class NovelService:
             genre = blueprint.genre if blueprint and blueprint.genre else "未知"
             outlines = project.outlines
             chapters = project.chapters
-            total = len(outlines) or len(chapters)
+            total = max(blueprint.total_chapters if blueprint else 0, max((row.chapter_number for row in outlines), default=0), max((row.chapter_number for row in chapters), default=0))
             completed = sum(1 for chapter in chapters if chapter.selected_version_id)
             owner = project.owner
             summaries.append(
@@ -250,7 +251,16 @@ class NovelService:
     # ------------------------------------------------------------------
     # 蓝图管理
     # ------------------------------------------------------------------
-    async def replace_blueprint(self, project_id: str, blueprint: Blueprint) -> None:
+    async def replace_blueprint(self, project_id: str, blueprint: Blueprint, *, checkpoint=None) -> None:
+        project = await self.repo.get_by_id(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="项目不存在")
+        if "volumes" in blueprint.model_fields_set:
+            validate_ranges(blueprint.volumes)
+            if blueprint.volumes:
+                protect_assignments(project, blueprint.volumes)
+            elif project.volumes and written_numbers(project):
+                raise HTTPException(status_code=409, detail="已有正文时不能清空卷规划")
         record = await self.session.get(NovelBlueprint, project_id)
         if not record:
             record = NovelBlueprint(project_id=project_id)
@@ -263,6 +273,11 @@ class NovelService:
         record.one_sentence_summary = blueprint.one_sentence_summary
         record.full_synopsis = blueprint.full_synopsis
         record.world_setting = blueprint.world_setting
+        record.generation_state = checkpoint
+        if checkpoint is not None:
+            project.title = blueprint.title
+            project.status = "blueprint_ready"
+        record.total_chapters = max(blueprint.total_chapters, max((item.chapter_number for item in blueprint.chapter_outline), default=0), max(written_numbers(project), default=0))
 
         await self.session.execute(delete(BlueprintCharacter).where(BlueprintCharacter.project_id == project_id))
         for index, data in enumerate(blueprint.characters):
@@ -299,16 +314,15 @@ class NovelService:
                 )
             )
 
-        await self.session.execute(delete(ChapterOutline).where(ChapterOutline.project_id == project_id))
-        for outline in blueprint.chapter_outline:
-            self.session.add(
-                ChapterOutline(
-                    project_id=project_id,
-                    chapter_number=outline.chapter_number,
-                    title=outline.title,
-                    summary=outline.summary,
-                )
-            )
+        await self._replace_outlines(project, blueprint.chapter_outline)
+        if "volumes" in blueprint.model_fields_set:
+            await VolumeService(self.session).apply_plan(project, blueprint.volumes)
+            record.total_chapters = max(record.total_chapters, max((item.end_chapter for item in blueprint.volumes), default=0))
+        elif project.volumes:
+            last = max(project.volumes, key=lambda item: item.end_chapter)
+            last.end_chapter = max(last.end_chapter, record.total_chapters)
+            await VolumeService(self.session).apply_plan(project, serialize_volumes(project))
+            record.total_chapters = max(record.total_chapters, max(item.end_chapter for item in project.volumes))
 
         await self.session.commit()
         await self._touch_project(project_id)
@@ -363,18 +377,36 @@ class NovelService:
                     )
                 )
         if "chapter_outline" in patch and patch["chapter_outline"] is not None:
-            await self.session.execute(delete(ChapterOutline).where(ChapterOutline.project_id == project_id))
-            for outline in patch["chapter_outline"]:
-                self.session.add(
-                    ChapterOutline(
-                        project_id=project_id,
-                        chapter_number=outline.get("chapter_number"),
-                        title=outline.get("title", ""),
-                        summary=outline.get("summary"),
-                    )
-                )
+            project = await self.repo.get_by_id(project_id)
+            outlines = [ChapterOutlineSchema(**item) for item in patch["chapter_outline"]]
+            await self._replace_outlines(project, outlines)
+            maximum = max((row.chapter_number for row in outlines), default=0)
+            if project.volumes:
+                last = max(project.volumes, key=lambda row: row.end_chapter)
+                last.end_chapter = max(last.end_chapter, maximum)
+                await VolumeService(self.session).apply_plan(project, serialize_volumes(project))
+            blueprint.total_chapters = max(blueprint.total_chapters or 0, maximum)
+            blueprint.generation_state = None
         await self.session.commit()
         await self._touch_project(project_id)
+
+    async def _replace_outlines(self, project, outlines):
+        protected = written_numbers(project)
+        existing = {item.chapter_number: item for item in project.outlines}
+        await self.session.execute(delete(ChapterOutline).where(
+            ChapterOutline.project_id == project.id, ChapterOutline.chapter_number.not_in(protected),
+        ))
+        seen = set()
+        for item in outlines:
+            if item.chapter_number in seen:
+                raise HTTPException(status_code=422, detail="大纲章号不能重复")
+            seen.add(item.chapter_number)
+            if item.chapter_number not in protected:
+                self.session.add(ChapterOutline(project_id=project.id, chapter_number=item.chapter_number, title=item.title,
+                                                summary=item.summary, volume_number=volume_for(item.chapter_number, project.volumes)))
+        for number in protected - existing.keys():
+            self.session.add(ChapterOutline(project_id=project.id, chapter_number=number, title=f"第{number}章", summary=""))
+        await self.session.flush()
 
     # ------------------------------------------------------------------
     # 章节与版本
@@ -397,6 +429,7 @@ class NovelService:
         title: str,
         summary: str,
         metadata: Optional[dict] = None,
+        volume_number: Optional[int] = None,
     ) -> ChapterOutline:
         """更新或创建章节大纲，支持 metadata 存储导演脚本等信息。"""
         stmt = select(ChapterOutline).where(
@@ -406,6 +439,8 @@ class NovelService:
         result = await self.session.execute(stmt)
         outline = result.scalars().first()
         if outline:
+            if volume_number is not None:
+                outline.volume_number = volume_number
             outline.title = title
             outline.summary = summary
             if metadata is not None:
@@ -417,6 +452,7 @@ class NovelService:
                 title=title,
                 summary=summary,
                 metadata=metadata,
+                volume_number=volume_number,
             )
             self.session.add(outline)
         await self.session.flush()
@@ -612,11 +648,14 @@ class NovelService:
                     }
                     for relation in sorted(project.relationships_, key=lambda r: r.position)
                 ],
+                volumes=serialize_volumes(project),
+                total_chapters=max(blueprint_obj.total_chapters or 0, max((item.end_chapter for item in serialize_volumes(project)), default=0), max((item.chapter_number for item in project.outlines), default=0)),
                 chapter_outline=[
                     ChapterOutlineSchema(
                         chapter_number=outline.chapter_number,
                         title=outline.title,
                         summary=outline.summary or "",
+                        volume_number=outline.volume_number or (1 if not project.volumes else None),
                     )
                     for outline in sorted(project.outlines, key=lambda o: o.chapter_number)
                 ],
@@ -670,6 +709,8 @@ class NovelService:
         elif section == NovelSectionType.CHAPTER_OUTLINE:
             data = {
                 "chapter_outline": [outline.model_dump() for outline in blueprint.chapter_outline],
+                "volumes": [volume.model_dump() for volume in blueprint.volumes],
+                "total_chapters": blueprint.total_chapters,
             }
         elif section == NovelSectionType.CHAPTERS:
             outlines_map = {outline.chapter_number: outline for outline in project.outlines}
@@ -740,6 +781,7 @@ class NovelService:
 
         return ChapterSchema(
             chapter_number=chapter_number,
+            volume_number=outline.volume_number if outline else None,
             title=title,
             summary=summary,
             real_summary=real_summary,

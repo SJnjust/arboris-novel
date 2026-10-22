@@ -158,8 +158,8 @@ export interface AIJob {
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
   stage: string
   progress: number
-  payload: { chapter_number?: number; writing_notes?: string }
-  result: { version_count?: number; failed_versions?: Array<{ index: number; detail: unknown }> } | null
+  payload: { chapter_number?: number; writing_notes?: string; volume_number?: number; resume?: boolean }
+  result: { version_count?: number; failed_versions?: Array<{ index: number; detail: unknown }>; project_id?: string; completed_volumes?: number[]; volume_count?: number } | null
   error: { detail: unknown; status_code: number } | null
   created_at: string
   updated_at: string
@@ -197,6 +197,20 @@ export interface Blueprint {
   characters?: Character[]
   relationships?: any[]
   chapter_outline?: ChapterOutline[]
+  volumes?: NovelVolume[]
+  total_chapters?: number
+}
+
+export interface NovelVolume {
+  volume_number: number
+  title: string
+  summary: string
+  start_chapter: number
+  end_chapter: number
+  status: 'planned' | 'outlining' | 'outlined'
+  outline_cursor: number
+  plan?: Record<string, unknown>
+  is_virtual?: boolean
 }
 
 export interface Character {
@@ -213,6 +227,7 @@ export interface ChapterOutline {
   chapter_number: number
   title: string
   summary: string
+  volume_number?: number | null
 }
 
 export interface ChapterVersion {
@@ -224,6 +239,7 @@ export interface Chapter {
   chapter_number: number
   title: string
   summary: string
+  volume_number?: number | null
   content: string | null
   versions: string[] | null  // versions是字符串数组，不是对象数组
   evaluation: string | null
@@ -344,11 +360,33 @@ export class NovelAPI {
     }, (response, signal) => readConceptEvents(response, options.onDelta || (() => {}), signal))
   }
 
-  static async generateBlueprint(projectId: string): Promise<BlueprintGenerationResponse> {
+  static async generateBlueprint(projectId: string, key?: string, options: RequestOptions & { resume?: boolean } = {}): Promise<JobSubmitted> {
+    const { resume = true, ...requestOptions } = options
     return request(`${NOVELS_BASE}/${projectId}/blueprint/generate`, {
-      timeoutMs: null,
-      method: 'POST'
+      ...requestOptions, method: 'POST',
+      headers: key ? { 'Idempotency-Key': key } : undefined,
+      body: JSON.stringify({ resume })
     })
+  }
+
+  static async getVolumes(projectId: string): Promise<NovelVolume[]> {
+    return request(`${NOVELS_BASE}/${projectId}/volumes`)
+  }
+
+  static async updateVolume(projectId: string, number: number, data: Pick<NovelVolume, 'title' | 'summary' | 'start_chapter' | 'end_chapter'>): Promise<NovelProject> {
+    return request(`${NOVELS_BASE}/${projectId}/volumes/${number}`, { method: 'PATCH', body: JSON.stringify(data) })
+  }
+
+  static async generateVolumeOutline(projectId: string, number: number, key: string, options: RequestOptions = {}): Promise<JobSubmitted> {
+    return request(`${NOVELS_BASE}/${projectId}/volumes/${number}/outline`, { ...options, method: 'POST', headers: { 'Idempotency-Key': key } })
+  }
+
+  static async generateRemainingVolumes(projectId: string, key: string, options: RequestOptions = {}): Promise<JobSubmitted> {
+    return request(`${NOVELS_BASE}/${projectId}/volumes/outline-all`, { ...options, method: 'POST', headers: { 'Idempotency-Key': key } })
+  }
+
+  static async smartSplitVolumes(projectId: string, key: string, options: RequestOptions = {}): Promise<JobSubmitted> {
+    return request(`${NOVELS_BASE}/${projectId}/volumes/smart-split`, { ...options, method: 'POST', headers: { 'Idempotency-Key': key } })
   }
 
   static async saveBlueprint(projectId: string, blueprint: Blueprint): Promise<NovelProject> {

@@ -5,7 +5,8 @@ const active = (job: AIJob) => job.status === 'queued' || job.status === 'runnin
 
 interface Options {
   kind?: string
-  onTerminal?: (job: AIJob, signal: AbortSignal) => Promise<void> | void
+  kinds?: string[]
+  onTerminal?: (job: AIJob, signal: AbortSignal) => Promise<void | (() => void)> | void | (() => void)
   onRecovered?: (jobs: AIJob[]) => void
 }
 
@@ -20,6 +21,7 @@ export function useJob(projectId: () => string | undefined, options: Options = {
   const ids = new Set<string>()
   const pending: Record<string, string> = {}
   const kind = options.kind || 'chapter_generate'
+  const matchesKind = (job: AIJob) => (options.kinds || [kind]).includes(job.kind)
   let epoch = 0
   let disposed = false
   const storageKey = () => `arboris:jobs:${projectId()}:${kind}`
@@ -32,7 +34,7 @@ export function useJob(projectId: () => string | undefined, options: Options = {
   }
 
   function merge(job: AIJob): AIJob | undefined {
-    if (job.project_id !== projectId() || job.kind !== kind) return
+    if (job.project_id !== projectId() || !matchesKind(job)) return
     const index = jobs.value.findIndex(item => item.id === job.id)
     const previous = jobs.value[index]
     if (previous && (!active(previous) && active(job) || previous.updated_at > job.updated_at)) return previous
@@ -66,15 +68,16 @@ export function useJob(projectId: () => string | undefined, options: Options = {
     try {
       const received = await NovelAPI.getJob(id, { signal: controller.signal })
       if (disposed || token !== epoch || controller.signal.aborted) return
-      if (received.project_id !== projectId() || received.kind !== kind) { ids.delete(id); save(); return }
+      if (received.project_id !== projectId() || !matchesKind(received)) { ids.delete(id); save(); return }
       const job = merge(received)!
       if (active(job)) { failures.delete(id); schedule(id, interval, token) }
       else {
-        await options.onTerminal?.(job, controller.signal)
+        const afterConsumed = await options.onTerminal?.(job, controller.signal)
         if (disposed || token !== epoch || controller.signal.aborted) return
         failures.delete(id)
         ids.delete(id)
         save()
+        if (typeof afterConsumed === 'function') afterConsumed()
       }
     } catch (reason) {
       if (disposed || token !== epoch || controller.signal.aborted) return
@@ -108,7 +111,7 @@ export function useJob(projectId: () => string | undefined, options: Options = {
     try {
       const restored = await NovelAPI.getJobs(project, { signal: controller.signal })
       if (disposed || token !== epoch) return
-      const matching = restored.filter(job => job.kind === kind)
+      const matching = restored.filter(matchesKind)
       for (const job of matching) {
         ids.add(job.id); merge(job)
         delete pending[job.target]
@@ -133,7 +136,11 @@ export function useJob(projectId: () => string | undefined, options: Options = {
       let id: string
       try { id = (await create(key, controller.signal)).job_id }
       catch (reason) {
-        if (reason instanceof ApiError && reason.status === 409 && reason.jobId) id = reason.jobId
+        if (reason instanceof ApiError && reason.status === 409 && reason.jobId) {
+          const existing = await NovelAPI.getJob(reason.jobId, { signal: controller.signal })
+          if (!matchesKind(existing)) throw reason
+          id = reason.jobId
+        }
         else throw reason
       }
       if (disposed || token !== epoch) return

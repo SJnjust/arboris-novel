@@ -153,6 +153,7 @@
                 :class="componentContainerClass"
                 @edit="handleSectionEdit"
                 @add="startAddChapter"
+                @updated="reloadSection('chapter_outline', true)"
               />
             </div>
           </div>
@@ -483,7 +484,7 @@ const componentProps = computed(() => {
     case 'relationships':
       return { data: data || null, editable }
     case 'chapter_outline':
-      return { outline: data?.chapter_outline || [], editable }
+      return { outline: data?.chapter_outline || [], volumes: data?.volumes || [], totalChapters: data?.total_chapters || 0, projectId, editable }
     case 'chapters':
       return { chapters: data?.chapters || [], isAdmin: props.isAdmin }
     default:

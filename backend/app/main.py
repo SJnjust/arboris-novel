@@ -14,6 +14,8 @@ from .services.prompt_service import PromptService
 from .db.session import AsyncSessionLocal, engine
 from .services.job_service import JobRunner
 from .services.chapter_generation_service import ChapterGenerationService
+from .services.volume_generation_service import VolumeGenerationService
+from .services.job_service import PLANNING_KINDS
 from .utils.llm_tool import close_openai_clients
 from .api.routers import api_router
 
@@ -98,6 +100,8 @@ app = FastAPI(
 app.state.job_runner = JobRunner(AsyncSessionLocal, user_limit=settings.ai_job_user_concurrency,
                                retention_days=settings.ai_job_retention_days)
 app.state.job_runner.register("chapter_generate", ChapterGenerationService())
+for kind in PLANNING_KINDS:
+    app.state.job_runner.register(kind, VolumeGenerationService(kind))
 
 # CORS 配置，生产环境建议改为具体域名
 app.add_middleware(

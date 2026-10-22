@@ -53,6 +53,30 @@ class ChapterOutline(BaseModel):
     chapter_number: int
     title: str
     summary: str
+    volume_number: Optional[int] = None
+
+
+class Volume(BaseModel):
+    volume_number: int = Field(ge=1, le=500)
+    title: str = Field(min_length=1, max_length=255)
+    summary: str = Field(default="", max_length=10000)
+    start_chapter: int = Field(ge=1)
+    end_chapter: int = Field(ge=1)
+    status: str = "planned"
+    outline_cursor: int = 0
+    plan: Dict[str, Any] = Field(default_factory=dict)
+    is_virtual: bool = False
+
+
+class VolumePatch(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    summary: Optional[str] = Field(default=None, max_length=10000)
+    start_chapter: Optional[int] = Field(default=None, ge=1, le=10000)
+    end_chapter: Optional[int] = Field(default=None, ge=1, le=10000)
+
+
+class BlueprintGenerateRequest(BaseModel):
+    resume: bool = True
 
 
 class Chapter(ChapterOutline):
@@ -81,6 +105,8 @@ class Blueprint(BaseModel):
     characters: List[Dict[str, Any]] = []
     relationships: List[Relationship] = []
     chapter_outline: List[ChapterOutline] = []
+    volumes: List[Volume] = Field(default_factory=list)
+    total_chapters: int = Field(default=0, ge=0)
     
     class Config:
         from_attributes = True
@@ -157,8 +183,8 @@ class DeleteChapterRequest(BaseModel):
 
 
 class GenerateOutlineRequest(BaseModel):
-    start_chapter: int
-    num_chapters: int
+    start_chapter: int = Field(ge=1, le=10000)
+    num_chapters: int = Field(ge=1, le=15)
 
 
 class BlueprintPatch(BaseModel):

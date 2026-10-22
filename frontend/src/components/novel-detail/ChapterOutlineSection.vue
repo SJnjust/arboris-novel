@@ -31,9 +31,12 @@
       </div>
     </div>
 
+    <VolumePlanning :blueprint="planning" :project-id="projectId" :editable="editable" :chapters="store.currentProject?.chapters" @updated="updated" />
+    <details v-for="group in groups" :key="group.volume_number" open>
+      <summary class="font-semibold cursor-pointer mb-4">{{ group.volume_number ? `第 ${group.volume_number} 卷 · ` : '' }}{{ group.title }}</summary>
     <ol class="relative border-l border-slate-200 ml-3 space-y-8">
       <li
-        v-for="chapter in outline"
+        v-for="chapter in group.outlines"
         :key="chapter.chapter_number"
         class="ml-6"
       >
@@ -48,29 +51,44 @@
           <p class="mt-3 text-sm text-slate-600 leading-6 whitespace-pre-line">{{ chapter.summary || '暂无摘要' }}</p>
         </div>
       </li>
-      <li v-if="!outline.length" class="ml-6 text-slate-400 text-sm">暂无章节大纲</li>
+      <li v-if="!group.outlines.length" class="ml-6 text-slate-400 text-sm">本卷尚无章节大纲，可按卷生成。</li>
     </ol>
+    </details>
   </div>
 </template>
 
 <script setup lang="ts">
-import { defineEmits, defineProps } from 'vue'
+import { computed, defineEmits, defineProps } from 'vue'
+import type { Blueprint, NovelVolume, NovelProject } from '@/api/novel'
+import VolumePlanning from '@/components/VolumePlanning.vue'
+import { useNovelStore } from '@/stores/novel'
+import { volumeGroups } from '@/utils/volumes'
 
 interface OutlineItem {
   chapter_number: number
   title: string
   summary: string
+  volume_number?: number | null
 }
 
 const props = defineProps<{
   outline: OutlineItem[]
   editable?: boolean
+  projectId?: string
+  volumes?: NovelVolume[]
+  totalChapters?: number
 }>()
 
 const emit = defineEmits<{
   (e: 'edit', payload: { field: string; title: string; value: any }): void
   (e: 'add'): void
+  (e: 'updated', project: NovelProject): void
 }>()
+
+const store = useNovelStore()
+const planning = computed<Blueprint>(() => ({ chapter_outline: props.outline, volumes: props.volumes, total_chapters: props.totalChapters }))
+const groups = computed(() => volumeGroups(planning.value))
+const updated = (project: NovelProject) => { store.setCurrentProject(project); emit('updated', project) }
 
 const emitEdit = (field: string, title: string, value: any) => {
   if (!props.editable) return

@@ -2,18 +2,20 @@
 import asyncio
 import logging
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
 from fastapi import HTTPException, Request
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from ..models.ai_job import AIJob
-from ..models.novel import Chapter
+from ..models.novel import Chapter, NovelVolume
 
 logger = logging.getLogger(__name__)
 ACTIVE = ("queued", "running")
 TERMINAL = ("succeeded", "failed", "cancelled")
+PLANNING_KINDS = ("blueprint_generate", "volume_outline", "volumes_outline", "volume_smart_split")
 
 
 class JobContext:
@@ -56,6 +58,17 @@ class JobRunner:
     def register(self, kind, handler):
         self.handlers[kind] = handler
 
+    @asynccontextmanager
+    async def edit_plan(self, project_id):
+        """短编辑事务与任务准入互斥，不能在模型等待期间持有此锁。"""
+        async with self._admission:
+            async with self.session_factory() as session:
+                active = await session.scalar(select(AIJob).where(AIJob.project_id == project_id,
+                    AIJob.kind.in_((*PLANNING_KINDS, "chapter_generate")), AIJob.status.in_(ACTIVE)))
+            if active:
+                raise HTTPException(status_code=409, detail={"message": "该项目正在生成，请等待任务完成后编辑大纲或卷规划", "job_id": active.id})
+            yield
+
     async def get(self, job_id, user_id):
         async with self.session_factory() as session:
             job = await session.get(AIJob, job_id)
@@ -87,9 +100,13 @@ class JobRunner:
                 original = await session.scalar(select(AIJob).where(AIJob.user_id == user_id, AIJob.idempotency_key == key))
                 if original:
                     return original
+                conflict_rule = and_(AIJob.kind == kind, AIJob.target == target)
+                if kind in PLANNING_KINDS:
+                    conflict_rule = AIJob.kind.in_((*PLANNING_KINDS, "chapter_generate"))
+                elif kind == "chapter_generate":
+                    conflict_rule = or_(conflict_rule, AIJob.kind.in_(PLANNING_KINDS))
                 conflict = await session.scalar(select(AIJob).where(
-                    AIJob.project_id == project_id, AIJob.kind == kind,
-                    AIJob.target == target, AIJob.status.in_(ACTIVE),
+                    AIJob.project_id == project_id, conflict_rule, AIJob.status.in_(ACTIVE),
                 ))
                 if conflict:
                     raise HTTPException(status_code=409, detail={"message": "该目标已有进行中的任务", "job_id": conflict.id})
@@ -228,6 +245,7 @@ class JobRunner:
                 error={"detail": "服务重启，任务已中断，请重新提交", "status_code": 503},
             ))
             await session.execute(update(Chapter).where(Chapter.status.in_(("generating", "evaluating", "selecting"))).values(status="failed"))
+            await session.execute(update(NovelVolume).where(NovelVolume.status == "outlining").values(status="planned"))
             await session.commit()
         await self._prune(force=True)
 

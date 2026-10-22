@@ -44,7 +44,8 @@ from app.models import Prompt, User
 from app.services import llm_service, prompt_service
 from app.services.chapter_ingest_service import ChapterIngestionService
 from app.services.chapter_generation_service import ChapterGenerationService
-from app.services.job_service import JobRunner
+from app.services.job_service import JobRunner, PLANNING_KINDS
+from app.services.volume_generation_service import VolumeGenerationService
 
 REAL_INGEST_CHAPTER = ChapterIngestionService.ingest_chapter
 REAL_RESOLVE_CONFIG = llm_service.LLMService._resolve_llm_config
@@ -75,7 +76,7 @@ async def database(tmp_path, monkeypatch):
             User(id=1, username="reader", hashed_password=hash_password(_password)),
             User(id=2, username="other", hashed_password=hash_password(_password)),
         ])
-        for name in ["concept", "screenwriting", "outline_generation", "chapter_plan", "writing_v2", "editor_review", "evaluation", "extraction"]:
+        for name in ["concept", "screenwriting", "volume_planning", "volume_outline", "outline_generation", "chapter_plan", "writing_v2", "editor_review", "evaluation", "extraction"]:
             session.add(Prompt(name=name, content=f"fixture:{name}"))
         await session.commit()
     monkeypatch.setattr(prompt_service, "_CACHE", {})
@@ -90,6 +91,8 @@ async def database(tmp_path, monkeypatch):
 async def job_runner(database, monkeypatch):
     runner = JobRunner(database)
     runner.register("chapter_generate", ChapterGenerationService())
+    for kind in PLANNING_KINDS:
+        runner.register(kind, VolumeGenerationService(kind))
     monkeypatch.setattr(app.state, "job_runner", runner)
     try:
         yield runner

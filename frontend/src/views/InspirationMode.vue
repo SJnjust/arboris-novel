@@ -101,6 +101,7 @@
       <BlueprintConfirmation
         v-if="showBlueprintConfirmation"
         :ai-message="confirmationMessage"
+        :regenerate="regenerateBlueprint"
         @blueprint-generated="handleBlueprintGenerated"
         @back="backToConversation"
       />
@@ -112,6 +113,7 @@
         :ai-message="blueprintMessage"
         @confirm="handleConfirmBlueprint"
         @regenerate="handleRegenerateBlueprint"
+        @update:blueprint="completedBlueprint = $event"
       />
     </div>
   </div>
@@ -154,6 +156,7 @@ const currentTurn = ref(0)
 const completedBlueprint = ref<Blueprint | null>(null)
 const confirmationMessage = ref('')
 const blueprintMessage = ref('')
+const regenerateBlueprint = ref(false)
 const chatArea = ref<HTMLElement>()
 let activeRequest: AbortController | null = null
 let disposed = false
@@ -179,6 +182,7 @@ const resetInspirationMode = () => {
   completedBlueprint.value = null
   confirmationMessage.value = ''
   blueprintMessage.value = ''
+  regenerateBlueprint.value = false
   
   // 清空 store 中的当前项目和对话状态
   novelStore.setCurrentProject(null)
@@ -213,6 +217,7 @@ const startConversation = async () => {
   try {
     await novelStore.createProject('未命名灵感', '开始灵感模式')
     if (disposed) return
+    await router.replace({ path: '/inspiration', query: { project_id: novelStore.currentProject!.id } })
     
     // 发起第一次对话
     await handleUserInput(null)
@@ -270,6 +275,13 @@ const restoreConversation = async (projectId: string) => {
       }
       // 计算当前轮次
       currentTurn.value = project.conversation_history.filter(m => m.role === 'assistant').length
+      const firstVolume = project.blueprint?.volumes?.find(volume => volume.volume_number === 1 && !volume.is_virtual)
+      if (firstVolume?.status === 'outlined') {
+        completedBlueprint.value = project.blueprint || null
+        blueprintMessage.value = '已恢复生成的蓝图与卷规划。'
+        showBlueprintConfirmation.value = false
+        showBlueprint.value = true
+      }
       await scrollToBottom()
     }
   } catch (error) {
@@ -335,13 +347,7 @@ const retryTurn = async (message: ChatMessage) => {
 }
 
 const handleGenerateBlueprint = async () => {
-  try {
-    const response = await novelStore.generateBlueprint()
-    handleBlueprintGenerated(response)
-  } catch (error) {
-    console.error('生成蓝图失败:', error)
-    globalAlert.showError(`生成蓝图失败: ${error instanceof Error ? error.message : '未知错误'}`, '生成失败')
-  }
+  showBlueprintConfirmation.value = true
 }
 
 const handleBlueprintGenerated = (response: any) => {
@@ -353,6 +359,7 @@ const handleBlueprintGenerated = (response: any) => {
 }
 
 const handleRegenerateBlueprint = () => {
+  regenerateBlueprint.value = true
   showBlueprint.value = false
   showBlueprintConfirmation.value = true
 }

@@ -14,6 +14,7 @@ from .novel import (
     NovelBlueprint,
     NovelConversation,
     NovelProject,
+    NovelVolume,
 )
 from .prompt import Prompt
 from .update_log import UpdateLog
@@ -66,6 +67,7 @@ __all__ = [
     "ChapterVersion",
     "ChapterEvaluation",
     "NovelProject",
+    "NovelVolume",
     "Prompt",
     "UpdateLog",
     "UsageMetric",

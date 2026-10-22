@@ -47,16 +47,22 @@
           :selected-chapter-number="selectedChapterNumber"
           :generating-chapter="generatingChapter"
           :evaluating-chapter="evaluatingChapter"
-          :is-generating-outline="isGeneratingOutline"
+          :is-generating-outline="isGeneratingOutline || volumeJobs.activeJobs.value.length > 0"
           @close-sidebar="closeSidebar"
           @select-chapter="selectChapter"
           @generate-chapter="generateChapter"
           @edit-chapter="openEditChapterModal"
           @delete-chapter="deleteChapter"
           @generate-outline="generateOutline"
+          @generate-volume-outline="generateVolumeOutline"
         />
 
         <div class="flex-1 min-w-0">
+          <div v-for="job in volumeJobs.jobs.value" :key="job.id" class="p-3 mb-3 rounded bg-gray-50" aria-live="polite">
+            <p>{{ planningStage(job.stage) }} · {{ job.progress }}%</p>
+            <p v-if="job.status === 'failed'" class="text-red-600">{{ formatApiDetail(job.error?.detail) }} 已保存的批次可以续跑。</p>
+            <button v-if="job.status === 'running' || job.status === 'queued'" class="underline" @click="cancelVolumeJob(job.id)">取消生成</button>
+          </div>
           <WDWorkspace
             :project="project"
             :selected-chapter-number="selectedChapterNumber"
@@ -116,6 +122,9 @@ import { useRouter } from 'vue-router'
 import { useNovelStore } from '@/stores/novel'
 import { ApiError, NovelAPI } from '@/api/novel'
 import { useJob } from '@/composables/useJob'
+import { useVolumeJobs } from '@/composables/useVolumeJobs'
+import { nextOutlineNumber, planningStage } from '@/utils/volumes'
+import { formatApiDetail } from '@/api/novel'
 import type { AIJob, Chapter, ChapterOutline, ChapterGenerationResponse, ChapterVersion } from '@/api/novel'
 import { globalAlert } from '@/composables/useAlert'
 import Tooltip from '@/components/Tooltip.vue'
@@ -152,6 +161,17 @@ const showGenerateOutlineModal = ref(false)
 // 计算属性
 const project = computed(() => novelStore.currentProject)
 
+const volumeJobs = useVolumeJobs(() => project.value?.id === props.id ? props.id : undefined, updated => {
+  if (updated.id === props.id) novelStore.setCurrentProject(updated)
+})
+const generateVolumeOutline = async (number: number) => {
+  try { await volumeJobs.generate(number) }
+  catch (error) { globalAlert.showError(error instanceof Error ? error.message : '卷大纲提交失败', '生成本卷大纲') }
+}
+const cancelVolumeJob = async (id: string) => {
+  try { await volumeJobs.cancel(id) }
+  catch (error) { globalAlert.showError(error instanceof Error ? error.message : '取消失败', '取消生成') }
+}
 const chapterJobs = useJob(() => project.value?.id === props.id ? props.id : undefined, {
   onRecovered(jobs) {
     if (selectedChapterNumber.value === null && jobs[0]?.payload.chapter_number) {
@@ -197,13 +217,13 @@ const selectedChapterOutline = computed(() => {
 
 const progress = computed(() => {
   if (!project.value?.blueprint?.chapter_outline) return 0
-  const totalChapters = project.value.blueprint.chapter_outline.length
+  const totalChapters = project.value.blueprint.total_chapters || project.value.blueprint.chapter_outline.length
   const completedChapters = project.value.chapters.filter(ch => ch.content).length
-  return Math.round((completedChapters / totalChapters) * 100)
+  return totalChapters ? Math.round((completedChapters / totalChapters) * 100) : 0
 })
 
 const totalChapters = computed(() => {
-  return project.value?.blueprint?.chapter_outline?.length || 0
+  return project.value?.blueprint?.total_chapters || project.value?.blueprint?.chapter_outline?.length || 0
 })
 
 const completedChapters = computed(() => {
@@ -457,14 +477,14 @@ const generateChapter = async (chapterNumber: number) => {
   } catch (error) {
     console.error('生成章节失败:', error)
 
-    if (error instanceof ApiError && error.status === 429) {
+    if (error instanceof ApiError && (error.status === 429 || error.status === 409)) {
       if (project.value === previousProject) {
         if (previousChapter && previousStatus) previousChapter.generation_status = previousStatus
         else if (temporaryChapter && project.value) {
           project.value.chapters = project.value.chapters.filter(chapter => chapter !== temporaryChapter)
         }
       }
-      globalAlert.showError('当前任务过多，请稍后再试', '生成受限')
+      globalAlert.showError(error.status === 429 ? '当前任务过多，请稍后再试' : error.message, '生成受限')
       return
     }
 
@@ -626,7 +646,12 @@ const handleGenerateOutline = async (numChapters: number) => {
   if (!project.value) return
   isGeneratingOutline.value = true
   try {
-    const startChapter = (project.value.blueprint?.chapter_outline?.length || 0) + 1
+    const startChapter = nextOutlineNumber(project.value.blueprint?.chapter_outline)
+    const volume = project.value.blueprint?.volumes?.find(row => !row.is_virtual && row.start_chapter <= startChapter && row.end_chapter >= startChapter)
+    if (volume) {
+      await volumeJobs.generate(volume.volume_number)
+      return
+    }
     await novelStore.generateChapterOutline(startChapter, numChapters)
     globalAlert.showSuccess('新的章节大纲已生成', '操作成功')
   } catch (error) {

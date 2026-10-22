@@ -2,3 +2,5 @@ AIDIR PATH=backend/prompts|ROLE=AI提示词模板_LLM调用的系统提示|BOUND
 AILIST NAME=chapter_generation.txt|K=file|P=章节生成提示_章节内容生成模板|E=-|A=章节生成指令
 AILIST NAME=outline_generation.txt|K=file|P=大纲生成提示_故事大纲生成模板|E=-|A=大纲生成指令
 AILIST NAME=review_generation.txt|K=file|P=评审生成提示_章节评审模板|E=-|A=评审生成指令
+AILIST NAME=volume_planning.md|K=file|P=分卷规划提示词v1|E=prompt:volume_planning|A=主线_冲突_高潮_钩子_伏笔
+AILIST NAME=volume_outline.md|K=file|P=卷内大纲提示词v1|E=prompt:volume_outline|A=连续批次_衔接_伏笔回收

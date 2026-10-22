@@ -23,3 +23,4 @@ AILIST NAME=ProjectCard.vue|K=file|P=项目卡片_小说项目展示|E=component
 AILIST NAME=RelationshipsEditor.vue|K=file|P=关系编辑器_角色关系编辑|E=component:RelationshipsEditor|A=关系CRUD
 AILIST NAME=Tooltip.vue|K=file|P=工具提示_悬浮提示组件|E=component:Tooltip|A=提示信息
 AILIST NAME=TypewriterEffect.vue|K=file|P=打字机效果_文字动画组件|E=component:TypewriterEffect|A=打字动画
+AILIST NAME=VolumePlanning.vue|K=file|P=分卷规划界面|E=component:VolumePlanning|A=编辑_任务_智能分卷

@@ -26,7 +26,7 @@
                 </div>
                 <div class="mt-6">
                   <label for="numChapters" class="md-text-field-label">生成数量</label>
-                  <input type="number" name="numChapters" id="numChapters" v-model.number="numChapters" class="md-text-field-input w-full mt-2" min="1" max="20">
+                  <input type="number" name="numChapters" id="numChapters" v-model.number="numChapters" class="md-text-field-input w-full mt-2" min="1" max="15">
                   <div class="mt-5 flex flex-wrap justify-center gap-3">
                     <button v-for="count in [1, 2, 5, 10]" :key="count" @click="setNumChapters(count)"
                       :class="['md-btn md-btn-outlined md-ripple', numChapters === count ? 'm3-count-selected' : '']">
@@ -65,7 +65,7 @@ const setNumChapters = (count: number) => {
 }
 
 const handleGenerate = () => {
-  if (numChapters.value > 0) {
+  if (numChapters.value > 0 && numChapters.value <= 15) {
     emit('generate', numChapters.value)
     emit('close')
   }

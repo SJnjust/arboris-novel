@@ -47,6 +47,8 @@ from ...services.chapter_ingest_service import ChapterIngestionService
 from ...services.llm_service import LLMService
 from ...services.novel_service import NovelService
 from ...services.prompt_service import PromptService
+from ...services.volume_planning import normalize_outline_batch, outline_context
+from ...services.volume_service import written_numbers
 from ...utils.json_utils import remove_think_tags, unwrap_markdown_json
 
 router = APIRouter(prefix="/api/writer", tags=["Writer"], route_class=RequestDeadlineRoute)
@@ -324,17 +326,19 @@ async def update_chapter_outline(
     request: UpdateChapterOutlineRequest,
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
+    runner: JobRunner = Depends(get_job_runner),
 ) -> NovelProjectSchema:
     novel_service = NovelService(session)
     await novel_service.ensure_project_owner(project_id, current_user.id)
 
-    outline = await novel_service.get_outline(project_id, request.chapter_number)
-    if not outline:
-        raise HTTPException(status_code=404, detail="未找到对应章节大纲")
-
-    outline.title = request.title
-    outline.summary = request.summary
-    await session.commit()
+    await session.rollback()
+    async with runner.edit_plan(project_id):
+        outline = await novel_service.get_outline(project_id, request.chapter_number)
+        if not outline:
+            raise HTTPException(status_code=404, detail="未找到对应章节大纲")
+        outline.title = request.title
+        outline.summary = request.summary
+        await session.commit()
 
     return await _load_project_schema(novel_service, project_id, current_user.id)
 
@@ -345,14 +349,17 @@ async def delete_chapters(
     request: DeleteChapterRequest,
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
+    runner: JobRunner = Depends(get_job_runner),
 ) -> NovelProjectSchema:
     novel_service = NovelService(session)
     await novel_service.ensure_project_owner(project_id, current_user.id)
 
-    for ch_num in request.chapter_numbers:
-        await novel_service.delete_chapter(project_id, ch_num)
+    await session.rollback()
+    async with runner.edit_plan(project_id):
+        for ch_num in request.chapter_numbers:
+            await novel_service.delete_chapter(project_id, ch_num)
 
-    await session.commit()
+        await session.commit()
     return await _load_project_schema(novel_service, project_id, current_user.id)
 
 
@@ -362,6 +369,7 @@ async def generate_chapters_outline(
     request: GenerateOutlineRequest,
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
+    runner: JobRunner = Depends(get_job_runner),
 ) -> NovelProjectSchema:
     novel_service = NovelService(session)
     prompt_service = PromptService(session)
@@ -369,32 +377,23 @@ async def generate_chapters_outline(
 
     project = await novel_service.ensure_project_owner(project_id, current_user.id)
     
-    # 获取蓝图信息
-    project_schema = await novel_service._serialize_project(project)
-    blueprint_text = json.dumps(project_schema.blueprint.model_dump(), ensure_ascii=False, indent=2)
-    
-    # 获取已有的章节大纲
-    existing_outlines = [
-        f"第{o.chapter_number}章 - {o.title}: {o.summary}"
-        for o in sorted(project.outlines, key=lambda x: x.chapter_number)
-    ]
-    existing_outlines_text = "\n".join(existing_outlines) if existing_outlines else "暂无"
-
+    volume = next((row for row in project.volumes if row.start_chapter <= request.start_chapter <= row.end_chapter), None)
+    end = request.start_chapter + request.num_chapters - 1
+    if project.volumes and (not volume or end > volume.end_chapter):
+        raise HTTPException(status_code=400, detail="请求超出所属卷的计划区间，请在对应卷内续写或先编辑卷规划")
+    plan = {"volume_number": volume.volume_number, "title": volume.title, "summary": volume.summary, "plan": volume.plan} if volume else {
+        "volume_number": 1, "title": "第 1 卷", "summary": "旧项目续写", "start_chapter": 1, "end_chapter": end,
+    }
+    recent = sorted((item for item in project.outlines if item.chapter_number < request.start_chapter), key=lambda item: item.chapter_number)[-10:]
+    previous = next((row.summary for row in project.volumes if volume and row.volume_number == volume.volume_number - 1), "")
+    protected = written_numbers(project)
+    prompt_input = outline_context(novel_service._build_blueprint_schema(project).model_dump(), plan, previous, recent, request.start_chapter, end)
+    volume_number = volume.volume_number if volume else None
     outline_prompt = await prompt_service.get_prompt("outline_generation")
     if not outline_prompt:
         raise HTTPException(status_code=500, detail="未配置大纲生成提示词")
 
-    prompt_input = f"""
-[世界蓝图]
-{blueprint_text}
-
-[已有章节大纲]
-{existing_outlines_text}
-
-[生成任务]
-请从第 {request.start_chapter} 章开始，续写接下来的 {request.num_chapters} 章的大纲。
-要求返回 JSON 格式，包含一个 chapters 数组，每个元素包含 chapter_number, title, summary。
-"""
+    await session.rollback()
 
     response = await llm_service.get_llm_response(
         system_prompt=outline_prompt,
@@ -407,15 +406,16 @@ async def generate_chapters_outline(
     normalized = unwrap_markdown_json(cleaned)
     try:
         data = parse_llm_json(response, allow_lossy=False)
-        new_outlines = data.get("chapters", [])
-        for item in new_outlines:
-            await novel_service.update_or_create_outline(
-                project_id, 
-                item["chapter_number"], 
-                item["title"], 
-                item["summary"]
-            )
-        await session.commit()
+        new_outlines = normalize_outline_batch(data, request.start_chapter, end)
+        async with runner.edit_plan(project_id):
+            current = await novel_service.ensure_project_owner(project_id, current_user.id)
+            protected = written_numbers(current)
+            for item in new_outlines:
+                if item["chapter_number"] not in protected:
+                    await novel_service.update_or_create_outline(project_id, **item, volume_number=volume_number)
+            await session.commit()
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("生成大纲解析失败: %s", exc)
         raise HTTPException(status_code=500, detail=f"大纲生成失败: {str(exc)}")

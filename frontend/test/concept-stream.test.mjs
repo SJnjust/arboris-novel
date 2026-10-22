@@ -107,24 +107,15 @@ test('InspirationMode restores an interrupted user turn with its stored message 
   component.stop()
 })
 
-test('BlueprintConfirmation waits for real completion and rejects repeated clicks after 180s', async () => {
+test('blueprint submission is a short 202 request with idempotency and resume options', async () => {
   let finish
   const env = await runtime(() => new Promise(resolve => { finish = resolve }))
-  const store = await env.novelStore()
-  store.currentProject = { id: 'project-1', title: '灵感', chapters: [], conversation_history: [] }
-  const alerts = []
-  const component = await env.component('../src/components/BlueprintConfirmation.vue', ['generateBlueprint', 'isGenerating'], store, { aiMessage: '开始生成' }, { showError: (...args) => alerts.push(args) })
-  const pending = component.state.generateBlueprint()
+  const pending = env.api.NovelAPI.generateBlueprint('project-1', 'stable-blueprint', { resume: false })
   await settle()
-  env.clock.now = 181000
-  await component.state.generateBlueprint()
-  assert.equal(component.state.isGenerating.value, true)
-  assert.equal(env.calls.length, 1)
+  assert.equal(env.clock.nextDelay(), 30000)
+  assert.equal(env.calls[0].options.headers.get('Idempotency-Key'), 'stable-blueprint')
+  assert.deepEqual(JSON.parse(env.calls[0].options.body), { resume: false })
+  finish(Response.json({ job_id: 'blueprint-1' }, { status: 202 }))
+  assert.equal((await pending).job_id, 'blueprint-1')
   assert.equal(env.clock.timers.size, 0)
-  assert.deepEqual(alerts, [])
-  finish(Response.json({ blueprint: { title: '已完成' }, ai_message: '完成' }))
-  await pending
-  assert.equal(component.state.isGenerating.value, false)
-  assert.equal(component.emitted[0][0], 'blueprintGenerated')
-  component.stop()
 })

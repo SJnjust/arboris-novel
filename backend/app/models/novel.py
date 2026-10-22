@@ -59,6 +59,9 @@ class NovelProject(Base):
     chapters: Mapped[list["Chapter"]] = relationship(
         back_populates="project", cascade="all, delete-orphan", order_by="Chapter.chapter_number"
     )
+    volumes: Mapped[list["NovelVolume"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan", order_by="NovelVolume.volume_number"
+    )
 
 
 class NovelConversation(Base):
@@ -94,6 +97,8 @@ class NovelBlueprint(Base):
     one_sentence_summary: Mapped[Optional[str]] = mapped_column(Text)
     full_synopsis: Mapped[Optional[str]] = mapped_column(LONG_TEXT_TYPE)
     world_setting: Mapped[Optional[dict]] = mapped_column(JSON, default=dict)
+    total_chapters: Mapped[int] = mapped_column(Integer, default=0)
+    generation_state: Mapped[Optional[dict]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -142,12 +147,28 @@ class ChapterOutline(Base):
     id: Mapped[int] = mapped_column(BIGINT_PK_TYPE, primary_key=True, autoincrement=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("novel_projects.id", ondelete="CASCADE"), nullable=False)
     chapter_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    volume_number: Mapped[Optional[int]] = mapped_column(Integer)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     summary: Mapped[Optional[str]] = mapped_column(Text)
     metadata_: Mapped[Optional[dict]] = mapped_column("metadata", JSON)  # 存储导演脚本/节拍状态
     metadata = _MetadataAccessor()
 
     project: Mapped[NovelProject] = relationship(back_populates="outlines")
+
+
+class NovelVolume(Base):
+    __tablename__ = "novel_volumes"
+
+    project_id: Mapped[str] = mapped_column(ForeignKey("novel_projects.id", ondelete="CASCADE"), primary_key=True)
+    volume_number: Mapped[int] = mapped_column(Integer, primary_key=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    start_chapter: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_chapter: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="planned", nullable=False)
+    outline_cursor: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    plan: Mapped[Optional[dict]] = mapped_column(JSON)
+    project: Mapped[NovelProject] = relationship(back_populates="volumes")
 
 
 class Chapter(Base):

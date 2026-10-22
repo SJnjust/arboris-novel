@@ -75,9 +75,12 @@
           </div>
 
           <div class="px-6 pb-6">
-            <div v-if="project.blueprint?.chapter_outline?.length" class="space-y-3">
+            <div v-if="groups.length" class="space-y-3">
+              <details v-for="group in groups" :key="group.volume_number" open class="space-y-3">
+                <summary class="font-semibold cursor-pointer text-sm">{{ group.volume_number ? `第 ${group.volume_number} 卷 · ` : '' }}{{ group.title }} · {{ group.written }} 已写 / {{ group.outlines.length }} 已有大纲 / {{ group.planned }} 计划章数</summary>
+                <button v-if="group.volume_number" class="md-btn md-btn-tonal text-sm" :disabled="isGeneratingOutline || group.status === 'outlined'" @click="$emit('generateVolumeOutline', group.volume_number)">{{ group.status === 'outlined' ? '本卷大纲完整' : '生成本卷大纲 / 续跑' }}</button>
               <div
-                v-for="(chapter, index) in project.blueprint.chapter_outline"
+                v-for="(chapter, index) in group.outlines"
                 :key="chapter.chapter_number"
                 :ref="el => setChapterRef(chapter.chapter_number, el)"
                 @click="$emit('selectChapter', chapter.chapter_number)"
@@ -217,6 +220,7 @@
                   </div>
                 </div>
               </div>
+              </details>
             </div>
             <div v-else class="text-center py-8 md-body-medium md-on-surface-variant">
               <svg class="w-12 h-12 mx-auto mb-3 opacity-50" fill="currentColor" viewBox="0 0 20 20">
@@ -264,6 +268,7 @@ import type { ComponentPublicInstance } from 'vue'
 import { globalAlert } from '@/composables/useAlert'
 import type { NovelProject } from '@/api/novel'
 import Tooltip from '@/components/Tooltip.vue'
+import { volumeGroups } from '@/utils/volumes'
 
 interface Props {
   project: NovelProject
@@ -276,7 +281,9 @@ interface Props {
 
 const props = defineProps<Props>()
 
-const emit = defineEmits(['closeSidebar', 'selectChapter', 'generateChapter', 'editChapter', 'deleteChapter', 'generateOutline'])
+const emit = defineEmits(['closeSidebar', 'selectChapter', 'generateChapter', 'editChapter', 'deleteChapter', 'generateOutline', 'generateVolumeOutline'])
+
+const groups = computed(() => volumeGroups(props.project.blueprint, props.project.chapters))
 
 const selectedForDeletion = ref<number[]>([])
 const listContainer = ref<HTMLElement | null>(null)

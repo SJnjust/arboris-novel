@@ -18,6 +18,12 @@ def test_api_deadlines_are_explicit_and_limited_to_task_routes():
         ('POST', '/api/writer/novels/{project_id}/chapters/generate'),
         ('GET', '/api/jobs'), ('GET', '/api/jobs/{job_id}'),
         ('POST', '/api/jobs/{job_id}/cancel'),
+        ('POST', '/api/novels/{project_id}/blueprint/generate'),
+        ('GET', '/api/novels/{project_id}/volumes'),
+        ('PATCH', '/api/novels/{project_id}/volumes/{number}'),
+        ('POST', '/api/novels/{project_id}/volumes/{number}/outline'),
+        ('POST', '/api/novels/{project_id}/volumes/outline-all'),
+        ('POST', '/api/novels/{project_id}/volumes/smart-split'),
     }
     assert all(isinstance(route, RequestDeadlineRoute) for route in api
                if getattr(route.endpoint, 'request_deadline', False))

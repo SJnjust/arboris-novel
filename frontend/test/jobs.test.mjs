@@ -219,7 +219,6 @@ test('legacy synchronous APIs do not install a client deadline', async () => {
   const calls = [
     () => api.importNovel(new Blob(['正文'])),
     () => api.converseConcept('project-1', { value: '测试' }),
-    () => api.generateBlueprint('project-1'),
     () => api.generateChapterOutline('project-1', 2, 1),
     () => api.evaluateChapter('project-1', 1),
     () => api.selectChapterVersion('project-1', 1, 0),
