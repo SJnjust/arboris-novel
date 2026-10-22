@@ -2,9 +2,11 @@
 from ...utils.json_utils import parse_llm_json
 import json
 import logging
+from contextlib import aclosing
 from typing import Dict, List
 
-from fastapi import APIRouter, Body, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, UploadFile, status
+from starlette.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import delete
 
@@ -25,6 +27,7 @@ from ...schemas.novel import (
 from ...schemas.user import UserInDB
 from ...models.ai_job import AIJob
 from ...services.job_service import JobRunner, get_job_runner
+from ...services.concept_service import ConceptService
 from ...services.import_service import ImportService
 from ...services.llm_service import LLMService
 from ...services.novel_service import NovelService
@@ -160,69 +163,31 @@ async def converse_with_concept(
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
 ) -> ConverseResponse:
-    """与概念设计师（LLM）进行对话，引导蓝图筹备。"""
-    novel_service = NovelService(session)
-    prompt_service = PromptService(session)
-    llm_service = LLMService(session)
+    return await ConceptService(session).converse(project_id, current_user.id, request)
 
-    project = await novel_service.ensure_project_owner(project_id, current_user.id)
 
-    history_records = await novel_service.list_conversations(project_id)
-    logger.info(
-        "项目 %s 概念对话请求，用户 %s，历史记录 %s 条",
-        project_id,
-        current_user.id,
-        len(history_records),
-    )
-    conversation_history = [
-        {"role": record.role, "content": record.content}
-        for record in history_records
-    ]
-    user_content = json.dumps(request.user_input, ensure_ascii=False)
-    conversation_history.append({"role": "user", "content": user_content})
+@router.post("/{project_id}/concept/converse/stream")
+async def stream_concept(
+    project_id: str,
+    payload: ConverseRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+):
+    await NovelService(session).ensure_project_owner(project_id, current_user.id)
+    await session.rollback()
 
-    system_prompt = _ensure_prompt(await prompt_service.get_prompt("concept"), "concept")
-    system_prompt = f"{system_prompt}\n{JSON_RESPONSE_INSTRUCTION}"
+    async def body():
+        async with aclosing(ConceptService(session).events(project_id, current_user.id, payload)) as events:
+            async for item in events:
+                if await request.is_disconnected():
+                    return
+                data = json.dumps(item["data"], ensure_ascii=False)
+                yield f"event: {item['event']}\ndata: {data}\n\n"
 
-    llm_response = await llm_service.get_llm_response(
-        system_prompt=system_prompt,
-        conversation_history=conversation_history,
-        temperature=0.8,
-        user_id=current_user.id,
-        timeout=240.0,
-    )
-    llm_response = remove_think_tags(llm_response)
-
-    try:
-        normalized = unwrap_markdown_json(llm_response)
-        sanitized = sanitize_json_like_text(normalized)
-        parsed = parse_llm_json(llm_response, allow_lossy=False)
-    except json.JSONDecodeError as exc:
-        logger.exception(
-            "Failed to parse concept converse response: project_id=%s user_id=%s error=%s\nOriginal response: %s\nNormalized: %s\nSanitized: %s",
-            project_id,
-            current_user.id,
-            exc,
-            llm_response[:1000],
-            normalized[:1000] if 'normalized' in locals() else "N/A",
-            sanitized[:1000] if 'sanitized' in locals() else "N/A",
-        )
-        raise HTTPException(
-            status_code=500,
-            detail=f"概念对话失败，AI 返回的内容格式不正确。请重试或联系管理员。错误详情: {str(exc)}"
-        ) from exc
-
-    normalized = json.dumps(parsed, ensure_ascii=False)
-    await novel_service.append_conversation(project_id, "user", user_content)
-    await novel_service.append_conversation(project_id, "assistant", normalized)
-
-    logger.info("项目 %s 概念对话完成，is_complete=%s", project_id, parsed.get("is_complete"))
-
-    if parsed.get("is_complete"):
-        parsed["ready_for_blueprint"] = True
-
-    parsed.setdefault("conversation_state", parsed.get("conversation_state", {}))
-    return ConverseResponse(**parsed)
+    return StreamingResponse(body(), media_type="text/event-stream", headers={
+        "X-Accel-Buffering": "no", "Cache-Control": "no-cache",
+    })
 
 
 @router.post("/{project_id}/blueprint/generate", response_model=BlueprintGenerationResponse)

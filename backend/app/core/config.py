@@ -88,6 +88,7 @@ class Settings(BaseSettings):
     chapter_summary_backfill_limit: int = Field(default=5, ge=0, le=50)
     llm_deadline_seconds: float = Field(default=600, gt=0, le=600)
     http_request_deadline_seconds: float = Field(default=90, gt=0, le=95)
+    concept_ping_seconds: float = Field(default=15, gt=0, le=60)
     embedding_provider: str = Field(
         default="openai",
         env="EMBEDDING_PROVIDER",

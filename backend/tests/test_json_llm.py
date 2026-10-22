@@ -89,6 +89,22 @@ async def test_collector_deadline_is_504_and_cancels_stream(llm):
     assert ended.is_set()
 
 
+async def test_stream_deadline_does_not_cancel_the_consumer_between_chunks(llm):
+    llm.reply('paced', '逐段正文')
+    service = LLMService(None, record_usage=False)
+    stream = service.stream_text([{'role': 'system', 'content': 'fixture:paced'}], timeout=0.01)
+    try:
+        assert await anext(stream) == '逐段'
+        # 消费者自身的等待不得被异步生成器里悬挂的 timeout scope 取消。
+        await asyncio.sleep(0.03)
+        with pytest.raises(HTTPException) as raised:
+            await anext(stream)
+        assert raised.value.status_code == 504
+        assert '总时限' in raised.value.detail
+    finally:
+        await stream.aclose()
+
+
 async def test_sync_api_deadline_returns_readable_504(client, auth, project, llm, monkeypatch):
     from app.core.config import settings
     monkeypatch.setattr(settings, "llm_deadline_seconds", 0.01)

@@ -1,5 +1,6 @@
 # AIMETA P=数据库初始化_创建表和默认数据|R=创建表_初始化管理员|NR=不含业务逻辑|E=init_db|X=internal|A=初始化函数|D=sqlalchemy|S=db|RD=./README.ai
 import logging
+import re
 
 from pathlib import Path
 
@@ -108,28 +109,51 @@ async def _ensure_database_exists() -> None:
     await admin_engine.dispose()
 
 
-async def _ensure_schema_updates() -> None:
+async def _ensure_schema_updates(db_engine=None) -> None:
     """补齐历史版本缺失的列，避免旧库在新版本报错。"""
-    async with engine.begin() as conn:
+    async with (db_engine or engine).begin() as conn:
         def _upgrade(sync_conn):
             inspector = inspect(sync_conn)
             columns = {col["name"] for col in inspector.get_columns("chapter_outlines")}
             if "metadata" not in columns:
                 sync_conn.execute(text("ALTER TABLE chapter_outlines ADD COLUMN metadata JSON"))
+            prompt_columns = {col["name"] for col in inspector.get_columns("prompts")}
+            if "version" not in prompt_columns:
+                sync_conn.execute(text("ALTER TABLE prompts ADD COLUMN version INTEGER NOT NULL DEFAULT 0"))
+            if "is_customized" not in prompt_columns:
+                sync_conn.execute(text("ALTER TABLE prompts ADD COLUMN is_customized BOOLEAN NOT NULL DEFAULT FALSE"))
         await conn.run_sync(_upgrade)
 
 
-async def _ensure_default_prompts(session: AsyncSession) -> None:
-    prompts_dir = Path(__file__).resolve().parents[2] / "prompts"
+def _prompt_file(path):
+    raw = path.read_text(encoding="utf-8")
+    match = re.match(r"<!--\s*version:\s*(\d+)\s*-->\r?\n", raw)
+    return (int(match[1]), raw[match.end():]) if match else (1, raw)
+
+
+async def _ensure_default_prompts(session: AsyncSession, prompts_dir=None) -> None:
+    prompts_dir = prompts_dir or Path(__file__).resolve().parents[2] / "prompts"
     if not prompts_dir.is_dir():
         return
 
-    result = await session.execute(select(Prompt.name))
-    existing_names = set(result.scalars().all())
+    result = await session.scalars(select(Prompt))
+    existing = {item.name: item for item in result}
 
     for prompt_file in sorted(prompts_dir.glob("*.md")):
         name = prompt_file.stem
-        if name in existing_names:
+        version, content = _prompt_file(prompt_file)
+        record = existing.get(name)
+        if record is None:
+            session.add(Prompt(name=name, content=content, version=version))
             continue
-        content = prompt_file.read_text(encoding="utf-8")
-        session.add(Prompt(name=name, content=content))
+        if record.version == 0:
+            # 首次升级先保护旧库；已知发行版旧正文也属于未定制模板。
+            shipped = {content}
+            for baseline in (prompts_dir / "baselines").glob(f"{name}.v*.md"):
+                shipped.add(_prompt_file(baseline)[1])
+            if record.content.replace("\r\n", "\n") not in shipped:
+                record.is_customized = True
+            record.version = 1
+        if not record.is_customized and version > record.version:
+            record.content = content
+            record.version = version

@@ -542,7 +542,7 @@ class NovelService:
 
     async def _serialize_project(self, project: NovelProject) -> NovelProjectSchema:
         conversations = [
-            {"role": convo.role, "content": convo.content}
+            {"role": convo.role, "content": convo.content, "metadata": convo.metadata}
             for convo in sorted(project.conversations, key=lambda c: c.seq)
         ]
 

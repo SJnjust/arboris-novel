@@ -76,12 +76,15 @@
           <transition name="fade">
             <InspirationLoading v-if="isInitialLoading" />
           </transition>
-          <ChatBubble
-            v-for="(message, index) in chatMessages"
-            :key="index"
-            :message="message.content"
-            :type="message.type"
-          />
+          <p v-if="startError" role="alert">{{ startError }}</p>
+          <button v-if="startError && !novelStore.currentProject" @click="startConversation" :disabled="novelStore.isLoading">重试创建项目</button>
+          <div v-for="(message, index) in chatMessages" :key="index">
+            <ChatBubble :message="message.content" :type="message.type" />
+            <div v-if="message.error" class="mt-2 text-sm text-red-600" role="alert">
+              <p>{{ message.error }}</p>
+              <button v-if="message.retryable" class="mt-2 underline" :disabled="novelStore.isLoading" @click="retryTurn(message)">重试本轮</button>
+            </div>
+          </div>
         </div>
 
         <!-- 输入区域 -->
@@ -115,9 +118,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, onMounted } from 'vue'
+import { ref, nextTick, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useNovelStore } from '@/stores/novel'
+import { ConceptStreamError, formatApiDetail } from '@/api/novel'
 import type { UIControl, Blueprint } from '@/api/novel'
 import ChatBubble from '@/components/ChatBubble.vue'
 import ConversationInput from '@/components/ConversationInput.vue'
@@ -129,6 +133,11 @@ import { globalAlert } from '@/composables/useAlert'
 interface ChatMessage {
   content: string
   type: 'user' | 'ai'
+  clientMsgId?: string
+  userInput?: any
+  error?: string
+  retryable?: boolean
+  completed?: boolean
 }
 
 const router = useRouter()
@@ -146,6 +155,10 @@ const completedBlueprint = ref<Blueprint | null>(null)
 const confirmationMessage = ref('')
 const blueprintMessage = ref('')
 const chatArea = ref<HTMLElement>()
+let activeRequest: AbortController | null = null
+let disposed = false
+let generation = 0
+const startError = ref('')
 
 const goBack = () => {
   router.push('/')
@@ -153,6 +166,9 @@ const goBack = () => {
 
 // 清空所有状态，开始新的灵感对话
 const resetInspirationMode = () => {
+  generation++
+  activeRequest?.abort()
+  startError.value = ''
   conversationStarted.value = false
   isInitialLoading.value = false
   showBlueprintConfirmation.value = false
@@ -172,7 +188,7 @@ const resetInspirationMode = () => {
 const exitConversation = async () => {
   const confirmed = await globalAlert.showConfirm('确定要退出灵感模式吗？当前进度可能会丢失。', '退出确认')
   if (confirmed) {
-    resetInspirationMode()
+    activeRequest?.abort()
     router.push('/')
   }
 }
@@ -196,13 +212,15 @@ const startConversation = async () => {
   
   try {
     await novelStore.createProject('未命名灵感', '开始灵感模式')
+    if (disposed) return
     
     // 发起第一次对话
     await handleUserInput(null)
   } catch (error) {
     console.error('启动灵感模式失败:', error)
     globalAlert.showError(`无法开始灵感模式: ${error instanceof Error ? error.message : '未知错误'}`, '启动失败')
-    resetInspirationMode() // 失败时重置回初始状态
+    isInitialLoading.value = false
+    startError.value = error instanceof Error ? error.message : '创建项目失败，请重试'
   }
 }
 
@@ -233,6 +251,7 @@ const restoreConversation = async (projectId: string) => {
       const lastAssistantMsgStr = project.conversation_history.filter(m => m.role === 'assistant').pop()?.content
       if (lastAssistantMsgStr) {
         const lastAssistantMsg = JSON.parse(lastAssistantMsgStr)
+        novelStore.currentConversationState = lastAssistantMsg.conversation_state || {}
         
         if (lastAssistantMsg.is_complete) {
           // 如果对话已完成，直接显示蓝图确认界面
@@ -243,6 +262,12 @@ const restoreConversation = async (projectId: string) => {
           currentUIControl.value = lastAssistantMsg.ui_control
         }
       }
+      const last = project.conversation_history.at(-1)
+      if (last?.role === 'user' && last.metadata?.client_msg_id) {
+        showBlueprintConfirmation.value = false
+        chatMessages.value.push({ content: '', type: 'ai', clientMsgId: last.metadata.client_msg_id,
+          userInput: JSON.parse(last.content), error: '上一轮尚未完成，请重试本轮', retryable: true })
+      }
       // 计算当前轮次
       currentTurn.value = project.conversation_history.filter(m => m.role === 'assistant').length
       await scrollToBottom()
@@ -250,58 +275,63 @@ const restoreConversation = async (projectId: string) => {
   } catch (error) {
     console.error('恢复对话失败:', error)
     globalAlert.showError(`无法恢复对话: ${error instanceof Error ? error.message : '未知错误'}`, '加载失败')
-    resetInspirationMode()
+    startError.value = error instanceof Error ? error.message : '恢复对话失败'
+  }
+}
+
+const runTurn = async (message: ChatMessage) => {
+  if (disposed || activeRequest) return
+  const controller = new AbortController()
+  const token = generation
+  activeRequest = controller
+  message.error = undefined
+  message.content = ''
+  try {
+    const response = await novelStore.sendConversation(message.userInput, {
+      clientMsgId: message.clientMsgId,
+      signal: controller.signal,
+      onDelta(text) {
+        if (disposed || controller.signal.aborted || token !== generation) return
+        message.content += text
+        isInitialLoading.value = false
+        void scrollToBottom()
+      }
+    })
+    if (disposed || controller.signal.aborted || token !== generation) return
+    message.content = response.ai_message
+    if (!message.completed) currentTurn.value++
+    message.completed = true
+    await scrollToBottom()
+    if (response.is_complete && response.ready_for_blueprint) {
+      confirmationMessage.value = response.ai_message
+      showBlueprintConfirmation.value = true
+    } else if (response.is_complete) {
+      await handleGenerateBlueprint()
+    } else {
+      currentUIControl.value = response.ui_control
+    }
+  } catch (error) {
+    if (disposed || token !== generation) return
+    message.error = error instanceof Error ? formatApiDetail(error.message) : '对话失败，请重试本轮'
+    message.retryable = !(error instanceof ConceptStreamError) || error.retryable
+  } finally {
+    if (activeRequest === controller) activeRequest = null
+    if (token === generation) isInitialLoading.value = false
   }
 }
 
 const handleUserInput = async (userInput: any) => {
-  try {
-    // 如果有用户输入，添加到聊天记录
-    if (userInput && userInput.value) {
-      chatMessages.value.push({
-        content: userInput.value,
-        type: 'user'
-      })
-      await scrollToBottom()
-    }
+  if (activeRequest || novelStore.isLoading) return
+  const clientMsgId = crypto.randomUUID()
+  if (userInput && userInput.value) chatMessages.value.push({ content: userInput.value, type: 'user', clientMsgId })
+  chatMessages.value.push({ content: '', type: 'ai', clientMsgId, userInput, retryable: true })
+  const message = chatMessages.value[chatMessages.value.length - 1]!
+  await scrollToBottom()
+  await runTurn(message)
+}
 
-    const response = await novelStore.sendConversation(userInput)
-
-    // 首次加载完成后，关闭加载动画
-    if (isInitialLoading.value) {
-      isInitialLoading.value = false
-    }
-
-    // 添加AI回复到聊天记录
-    chatMessages.value.push({
-      content: response.ai_message,
-      type: 'ai'
-    })
-    currentTurn.value++
-
-    await scrollToBottom()
-
-    if (response.is_complete && response.ready_for_blueprint) {
-      // 对话完成，显示蓝图确认界面
-      confirmationMessage.value = response.ai_message
-      showBlueprintConfirmation.value = true
-    } else if (response.is_complete) {
-      // 向后兼容：直接生成蓝图（如果后端还没更新）
-      await handleGenerateBlueprint()
-    } else {
-      // 继续对话
-      currentUIControl.value = response.ui_control
-    }
-  } catch (error) {
-    console.error('对话失败:', error)
-    // 确保在出错时也停止初始加载状态
-    if (isInitialLoading.value) {
-      isInitialLoading.value = false
-    }
-    globalAlert.showError(`抱歉，与AI连接时遇到问题: ${error instanceof Error ? error.message : '未知错误'}`, '通信失败')
-    // 停止加载并返回初始界面
-    resetInspirationMode()
-  }
+const retryTurn = async (message: ChatMessage) => {
+  if (message.error && message.clientMsgId && !novelStore.isLoading) await runTurn(message)
 }
 
 const handleGenerateBlueprint = async () => {
@@ -355,9 +385,9 @@ onMounted(() => {
   const projectId = route.query.project_id as string
   if (projectId) {
     restoreConversation(projectId)
-  } else {
-    // 每次进入灵感模式都重置状态，确保没有缓存
-    resetInspirationMode()
+  } else if (novelStore.currentProject?.id) {
+    void restoreConversation(novelStore.currentProject.id)
   }
 })
+onUnmounted(() => { disposed = true; activeRequest?.abort() })
 </script>

@@ -4,6 +4,8 @@ import { webcrypto } from 'node:crypto'
 import { setImmediate } from 'node:timers/promises'
 import ts from 'typescript'
 import * as vue from 'vue'
+import * as pinia from 'pinia'
+import { marked } from 'marked'
 
 export async function settle() {
   for (let count = 0; count < 8; count++) await setImmediate()
@@ -57,7 +59,7 @@ export async function runtime(fetcher, saved = storage()) {
   const calls = []
   const redirects = []
   const auth = { isAuthenticated: true, token: 'offline-fixture', logout() { this.isAuthenticated = false } }
-  const context = createContext({ console, Error, Headers, Response, FormData, AbortController, URL, DOMException,
+  const context = createContext({ console, Error, Headers, Response, FormData, AbortController, URL, DOMException, TextDecoder,
     crypto: webcrypto, document, localStorage: saved, setTimeout: clock.set, clearTimeout: clock.clear,
     fetch: (url, options) => { calls.push({ url, options }); return fetcher(String(url), options) } })
   const synthetic = (values) => new SyntheticModule(Object.keys(values), function () {
@@ -68,6 +70,12 @@ export async function runtime(fetcher, saved = storage()) {
     ['@/stores/auth', synthetic({ useAuthStore: () => auth })],
     ['@/router', synthetic({ default: { push: path => redirects.push(path) } })]
   ])
+  async function sourceModule(name, path, suffix = '') {
+    const source = await readFile(new URL(path, import.meta.url), 'utf8')
+    const script = path.endsWith('.vue') ? source.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1] : source
+    const code = ts.transpileModule(`${script}\n${suffix}`, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText
+    return new SourceTextModule(code, { context, identifier: name, initializeImportMeta: meta => { meta.env = { MODE: 'production' } } })
+  }
   for (const [name, path] of [['@/api/novel', '../src/api/novel.ts'], ['useJob', '../src/composables/useJob.ts']]) {
     const source = await readFile(new URL(path, import.meta.url), 'utf8')
     const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText
@@ -81,6 +89,36 @@ export async function runtime(fetcher, saved = storage()) {
   }
   return { api: modules.get('@/api/novel').namespace, useJob: modules.get('useJob').namespace.useJob,
     clock, calls, document, storage: saved, redirects, auth, vue,
+    async novelStore() {
+      pinia.setActivePinia(pinia.createPinia())
+      modules.set('pinia', synthetic(pinia))
+      const module = await sourceModule('@/stores/novel', '../src/stores/novel.ts')
+      await module.link(specifier => modules.get(specifier))
+      await module.evaluate()
+      return module.namespace.useNovelStore()
+    },
+    async component(path, names, store, props = {}, alerts = {}) {
+      context.defineProps = () => props
+      const emitted = []
+      context.defineEmits = () => (...args) => emitted.push(args)
+      modules.set('@/stores/novel', synthetic({ useNovelStore: () => store }))
+      modules.set('vue-router', synthetic({ useRouter: () => ({ push: path => redirects.push(path) }), useRoute: () => ({ query: {} }) }))
+      modules.set('@/composables/useAlert', synthetic({ globalAlert: alerts }))
+      modules.set('marked', synthetic({ marked }))
+      const mounted = []
+      const unmounted = []
+      const componentVue = synthetic({ ...vue, onMounted: fn => mounted.push(fn), onUnmounted: fn => unmounted.push(fn) })
+      const module = await sourceModule(path, path, `export { ${names.join(', ')} }`)
+      await module.link(specifier => {
+        if (specifier === 'vue') return componentVue
+        if (specifier.endsWith('.vue')) return synthetic({ default: {} })
+        if (!modules.has(specifier)) throw new Error(`Unmocked component import: ${specifier}`)
+        return modules.get(specifier)
+      })
+      const scope = vue.effectScope()
+      await scope.run(() => module.evaluate())
+      return { state: module.namespace, emitted, mount: () => mounted.forEach(fn => fn()), stop() { unmounted.forEach(fn => fn()); scope.stop() } }
+    },
     async writingDesk(store, props, alerts) {
       context.defineProps = () => props
       modules.set('@/composables/useJob', modules.get('useJob'))

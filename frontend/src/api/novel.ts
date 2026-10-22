@@ -46,7 +46,7 @@ export class ApiError extends Error {
   }
 }
 
-export const request = async (url: string, options: RequestOptions = {}) => {
+export const request = async (url: string, options: RequestOptions = {}, readResponse: (response: Response, signal: AbortSignal) => Promise<any> = response => response.json()) => {
   const { timeoutMs = 30000, signal, ...init } = options
   const controller = new AbortController()
   const abort = () => controller.abort(signal?.reason)
@@ -82,7 +82,7 @@ export const request = async (url: string, options: RequestOptions = {}) => {
       throw new ApiError(errorData.detail ? formatApiDetail(errorData.detail) : `请求失败，状态码: ${response.status}`, response.status, errorData.detail)
     }
 
-    return await response.json()
+    return await readResponse(response, controller.signal)
   } catch (error) {
     if (timedOut) throw new Error('请求超时，请重试')
     throw error
@@ -90,6 +90,62 @@ export const request = async (url: string, options: RequestOptions = {}) => {
     if (timer !== undefined) clearTimeout(timer)
     signal?.removeEventListener('abort', abort)
   }
+}
+
+export class ConceptStreamError extends Error {
+  constructor(message: string, public retryable = true) { super(message) }
+}
+
+export async function readConceptEvents(response: Response, onDelta: (text: string) => void, signal: AbortSignal): Promise<ConverseResponse> {
+  if (!response.body) throw new ConceptStreamError('未收到对话内容，请重试本轮')
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  const abort = () => { void reader.cancel().catch(() => {}) }
+  signal.addEventListener('abort', abort, { once: true })
+  try {
+    while (true) {
+      if (signal.aborted) throw signal.reason
+      const { done, value } = await reader.read()
+      if (signal.aborted) throw signal.reason
+      buffer += decoder.decode(value, { stream: !done })
+      let boundary: RegExpExecArray | null
+      while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
+        const frame = buffer.slice(0, boundary.index)
+        buffer = buffer.slice(boundary.index + boundary[0].length)
+        let event = 'message'
+        const data: string[] = []
+        for (const line of frame.split(/\r?\n/)) {
+          if (line.startsWith('event:')) event = line.slice(6).trim()
+          if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''))
+        }
+        if (event === 'ping' || !data.length) continue
+        let parsed
+        try { parsed = JSON.parse(data.join('\n')) }
+        catch { throw new ConceptStreamError('对话数据格式不正确，请重试本轮') }
+        if (event === 'delta') {
+          if (typeof parsed.text !== 'string') throw new ConceptStreamError('对话数据格式不正确，请重试本轮')
+          onDelta(parsed.text)
+        } else if (event === 'final') {
+          if (typeof parsed.ai_message !== 'string' || !parsed.ui_control || !parsed.conversation_state) throw new ConceptStreamError('对话数据格式不正确，请重试本轮')
+          return parsed as ConverseResponse
+        } else if (event === 'error') {
+          throw new ConceptStreamError(formatApiDetail(parsed.detail), parsed.retryable !== false)
+        }
+      }
+      if (done) throw new ConceptStreamError('连接已中断，请重试本轮')
+    }
+  } finally {
+    signal.removeEventListener('abort', abort)
+    await reader.cancel().catch(() => {})
+    reader.releaseLock()
+  }
+}
+
+export interface ConceptStreamOptions {
+  clientMsgId: string
+  onDelta?: (text: string) => void
+  signal?: AbortSignal
 }
 
 export interface JobSubmitted { job_id: string }
@@ -178,6 +234,7 @@ export interface Chapter {
 export interface ConversationMessage {
   role: 'user' | 'assistant'
   content: string
+  metadata?: { client_msg_id?: string; conversation_state?: Record<string, unknown> } | null
 }
 
 export interface ConverseResponse {
@@ -277,6 +334,14 @@ export class NovelAPI {
         conversation_state: conversationState
       })
     })
+  }
+
+  static async converseConceptStream(projectId: string, userInput: any, conversationState: any, options: ConceptStreamOptions): Promise<ConverseResponse> {
+    return request(`${NOVELS_BASE}/${projectId}/concept/converse/stream`, {
+      method: 'POST', timeoutMs: null, signal: options.signal,
+      headers: { Accept: 'text/event-stream' },
+      body: JSON.stringify({ user_input: userInput || { id: null, value: null }, conversation_state: conversationState, client_msg_id: options.clientMsgId })
+    }, (response, signal) => readConceptEvents(response, options.onDelta || (() => {}), signal))
   }
 
   static async generateBlueprint(projectId: string): Promise<BlueprintGenerationResponse> {

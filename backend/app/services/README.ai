@@ -20,3 +20,4 @@ AILIST NAME=consistency_service.py|K=file|P=一致性检查服务_剧情逻辑�
 AILIST NAME=blueprint_service.py|K=file|P=章节蓝图服务_蓝图元数据管理|E=BlueprintService|A=蓝图CRUD_元数据生成
 AILIST NAME=job_service.py|K=file|P=后台任务调度_准入_取消_恢复|E=JobRunner|A=强引用_幂等_并发_心跳
 AILIST NAME=chapter_generation_service.py|K=file|P=章节生成后台流水线|E=ChapterGenerationService|A=摘要_规划_并行版本_持久化
+AILIST NAME=concept_service.py|K=file|P=灵感对话共享流程|E=ConceptService|A=历史裁剪_幂等_SSE_断连取消

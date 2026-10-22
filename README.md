@@ -285,6 +285,23 @@ SDK 传输超时为 connect=10/read=90/write=30/pool=10 秒，重试 1 次；客
 
 R1 迁移的是章节生成；灵感 SSE 和蓝图/分卷任务按 R2/R3 继续推进。短 HTTP 时限只通过路由装饰器启用在章节生成提交与三个 jobs 接口，响应流的发送不受此时限取消。尚未迁移的蓝图、概念对话、大纲续写、评审、优化、导入、选定版本嵌入等保持各自原有的后端时长，前端这些调用用 timeoutMs: null 关闭新增的请求计时器；普通请求默认仍为 30 秒，调用者仍可通过 AbortSignal 取消。Cloudflare 对这些旧同步调用的约 100 秒等待限制仍在，需要后续迁移解决；本地/内网可继续等待原来的生成过程。
 
+### 灵感流式对话与提示词版本（R2）
+
+灵感模式使用 `POST /api/novels/{id}/concept/converse/stream`，返回 `text/event-stream`，禁用代理缓冲和响应缓存。请求仍带 `user_input`、`conversation_state`，新增 `client_msg_id`；前端为每轮生成 ID，失败时保留聊天与项目，用同一 ID“重试本轮”。离开页面会中止本页请求及对应的上游流，返回页面可从已保存的用户消息恢复尚未完成的一轮。
+
+- `delta`：`{"text":"回复增量"}`，只发送根对象 ai_message 的文本；不发送 ui_control 或状态 JSON。
+- `ping`：`{}`，默认每 15 秒一次，持续有 delta 时也照常心跳。`CONCEPT_PING_SECONDS` 可配置，范围大于 0 且不超过 60 秒。
+- `final`：完整 ConverseResponse，与原同步接口结构相同；前端此时更新输入选项与对话状态。
+- `error`：`{"detail":"错误说明","retryable":true}`；已收到的回复保留在原消息上。
+
+旧同步端点保留，并和流式端点共用服务。带消息 ID 时，用户消息先保存并按项目内的 ID 去重，assistant 仅在完整 JSON 通过严格解析/校验后保存。同 ID 已完成的回复直接重放，不重复调用模型；同 ID 换输入返回冲突。未带 ID 的旧调用仍保持失败时不保存新用户消息的兼容行为。最终数据库提交后才发送 final，网络丢失 final 时可重放。每个项目在单 worker 内串行处理，锁在没有使用者时释放。
+
+模型上下文仅保留最近 12 条消息（包括当前输入），assistant 只保留 ai_message；完整 conversation_state 存在 assistant metadata，并以 `[已收集信息]` 加到系统提示词。旧的完整 JSON 历史也会投影成上述格式。项目 conversation_history 响应增加可选 metadata，便于恢复被中断轮次的 ID。LLMService.stream_text 与同步收集共享 R1 的总 deadline、长度续写与客户端设置；SSE 路由不加短请求时限。零次完成调用的中断会退还默认密钥预留额度。
+
+蓝图确认页显示真实请求的等待状态，防止重复点击；不再用 180 秒定时器制造超时或模拟进度。蓝图后端仍是同步接口，经 Cloudflare 的等待限制需要 R3 的后台任务迁移解决。
+
+所有发行提示词以 `<!-- version: N -->` 开头，加载时剥离版本头。启动迁移会检查列后补齐 prompts.version / is_customized（SQLite/MySQL），缺失模板自动插入，文件版本更高且未定制时更新。首次升级先比对旧库内容，和发行文件不同的标为定制，保护管理员修改；concept v1 的发行正文保留在 prompts/baselines/，可识别并升级到使用 `[已收集信息]` 的 v2。后台新建/编辑模板都标记为定制，不再自动覆盖；更新文件正文时需要递增版本号。
+
 ### 打包与构建
 
 - 前端：`npm run build`，构建产物位于 `frontend/dist/`

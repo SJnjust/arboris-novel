@@ -66,29 +66,6 @@
         <h3 class="text-xl font-semibold text-gray-800 animate-pulse">{{ loadingText }}</h3>
         <p class="text-gray-600">AI正在为您精心打造独特的故事蓝图...</p>
 
-        <!-- 进度条 -->
-        <div class="w-full max-w-md mx-auto">
-          <!-- <div class="flex justify-between text-xs text-gray-500 mb-2">
-            <span>生成进度</span>
-            <span>{{ Math.round(progress) }}%</span>
-          </div> -->
-          <div class="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
-            <div
-              class="h-2 rounded-full transition-all duration-1000 ease-out relative"
-              :class="progress >= 100 ? 'bg-gradient-to-r from-green-500 to-emerald-600' : 'bg-gradient-to-r from-indigo-500 to-purple-600'"
-              :style="{ width: `${progress}%` }"
-            >
-              <!-- 闪光效果 -->
-              <div class="absolute inset-0 bg-gradient-to-r from-transparent via-white to-transparent opacity-30 animate-shimmer"></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 倒计时 -->
-        <!-- <div class="text-sm text-gray-500">
-          <span>预计完成时间: {{ timeRemaining }}秒</span>
-        </div> -->
-
         <!-- 温馨提示 -->
         <div class="mt-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
           <p class="text-sm text-blue-800">
@@ -126,7 +103,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onUnmounted, inject } from 'vue'
+import { ref, computed, onUnmounted } from 'vue'
 import { marked } from 'marked'
 import { useNovelStore } from '@/stores/novel'
 import { globalAlert } from '@/composables/useAlert'
@@ -151,116 +128,28 @@ const emit = defineEmits<{
 const novelStore = useNovelStore()
 const isGenerating = ref(false)
 const progress = ref(0)
-const timeElapsed = ref(0)
-const maxTime = 180 // 180秒超时
+let disposed = false
 
-let progressTimer: NodeJS.Timeout | null = null
-let timeoutTimer: NodeJS.Timeout | null = null
-
-// 渲染 Markdown
-const renderedAiMessage = computed(() => {
-  return marked.parse(props.aiMessage)
-})
-
-// 动态加载文本
-const loadingText = computed(() => {
-  if (progress.value >= 100) {
-    return '生成完成！正在准备展示...'
-  }
-
-  const messages = [
-    '正在分析故事结构...',
-    '构建角色关系网络...',
-    '生成情节发展脉络...',
-    '完善世界观设定...',
-    '优化章节安排...',
-    '最后润色细节...'
-  ]
-
-  const index = Math.floor((progress.value / 100) * messages.length)
-  return messages[Math.min(index, messages.length - 1)]
-})
-
-// 剩余时间计算
-const timeRemaining = computed(() => {
-  return Math.max(0, maxTime - timeElapsed.value)
-})
+const renderedAiMessage = computed(() => marked.parse(props.aiMessage))
+const loadingText = computed(() => progress.value === 100 ? '生成完成！正在准备展示...' : '正在生成故事蓝图，请耐心等待...')
 
 const generateBlueprint = async () => {
+  if (isGenerating.value) return
   isGenerating.value = true
   progress.value = 0
-  timeElapsed.value = 0
-
-  // 启动进度条动画
-  progressTimer = setInterval(() => {
-    timeElapsed.value += 0.1
-
-    // 非线性进度增长，前面快后面慢
-    const normalizedTime = timeElapsed.value / maxTime
-    if (normalizedTime < 0.7) {
-      // 前70%时间内进度到80%
-      progress.value = Math.min(80, (normalizedTime / 0.7) * 80)
-    } else {
-      // 后30%时间内从80%到95%
-      const remainingProgress = (normalizedTime - 0.7) / 0.3
-      progress.value = Math.min(95, 80 + remainingProgress * 15)
-    }
-  }, 100)
-
-  // 60秒超时
-  timeoutTimer = setTimeout(() => {
-    clearTimers()
-    isGenerating.value = false
-    globalAlert.showError('生成超时，请稍后重试。如果问题持续，请检查网络连接。', '生成超时')
-  }, maxTime * 1000)
-
   try {
-    // 直接调用store中的API
-    console.log('开始调用generateBlueprint API...')
     const response = await novelStore.generateBlueprint()
-    console.log('API调用成功，收到响应:', response)
-
-    // API成功后，快速完成进度条到100%
-    if (progressTimer) {
-      clearInterval(progressTimer)
-      progressTimer = null
-    }
-
-    // 动画到100%并显示完成状态
+    if (disposed) return
     progress.value = 100
-
-    // 等待一下让用户看到100%完成状态，然后再切换界面
-    await new Promise(resolve => setTimeout(resolve, 800))
-
-    // 清理并重置状态
-    clearTimers()
-    isGenerating.value = false
-
-    // 通知父组件生成完成
     emit('blueprintGenerated', response)
-
   } catch (error) {
-    console.error('生成蓝图失败:', error)
-    clearTimers()
+    if (!disposed) globalAlert.showError(`生成蓝图失败: ${error instanceof Error ? error.message : '未知错误'}`, '生成失败')
+  } finally {
     isGenerating.value = false
-    globalAlert.showError(`生成蓝图失败: ${error instanceof Error ? error.message : '未知错误'}`, '生成失败')
   }
 }
 
-const clearTimers = () => {
-  if (progressTimer) {
-    clearInterval(progressTimer)
-    progressTimer = null
-  }
-  if (timeoutTimer) {
-    clearTimeout(timeoutTimer)
-    timeoutTimer = null
-  }
-}
-
-onUnmounted(() => {
-  clearTimers()
-})
+onUnmounted(() => { disposed = true })
 </script>
 
 <style scoped>

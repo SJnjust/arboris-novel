@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+from contextlib import aclosing
 from datetime import date
 from typing import Any, Dict, List, Optional
 
@@ -125,7 +126,48 @@ class LLMService:
         except asyncio.TimeoutError as exc:
             raise HTTPException(status_code=504, detail="AI 生成超过总时限，请稍后重试或缩小生成范围") from exc
 
+    async def stream_text(
+        self, messages: List[Dict[str, str]], *, temperature: float = 0.7,
+        user_id: Optional[int] = None, timeout: float = 300.0,
+        response_format: Optional[str] = None, max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None, config=None,
+    ):
+        """逐段返回文本；配置、续写与流关闭均在同一个总 deadline 内。"""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + min(timeout, settings.llm_deadline_seconds)
+        try:
+            resolved = config or self._fixed_config
+            if resolved is None:
+                resolved = await asyncio.wait_for(self._resolve_llm_config(user_id), max(0, deadline - loop.time()))
+            async with aclosing(self._stream_body(
+                messages, config=resolved, temperature=temperature, user_id=user_id,
+                timeout=timeout, response_format=response_format, max_tokens=max_tokens, top_p=top_p,
+            )) as stream:
+                while True:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError
+                    try:
+                        text = await asyncio.wait_for(anext(stream), remaining)
+                    except StopAsyncIteration:
+                        return
+                    # yield 时不在 timeout context 中，避免取消消费者自身的工作。
+                    yield text
+        except asyncio.TimeoutError as exc:
+            raise HTTPException(status_code=504, detail="AI 生成超过总时限，请稍后重试或缩小生成范围") from exc
+
     async def _collect(self, messages, *, config, temperature, user_id, timeout,
+                       response_format, max_tokens, top_p):
+        parts = []
+        async with aclosing(self.stream_text(
+            messages, config=config, temperature=temperature, user_id=user_id, timeout=timeout,
+            response_format=response_format, max_tokens=max_tokens, top_p=top_p,
+        )) as stream:
+            async for text in stream:
+                parts.append(text)
+        return "".join(parts)
+
+    async def _stream_body(self, messages, *, config, temperature, user_id, timeout,
                        response_format, max_tokens, top_p):
         client = LLMClient(api_key=config["api_key"], base_url=config.get("base_url"))
         full_response = ""
@@ -136,14 +178,19 @@ class LLMService:
             for attempt in range(3):
                 segment = ""
                 finish_reason = None
-                async for part in client.stream_chat(
+                stream = client.stream_chat(
                     messages=[ChatMessage(role=msg["role"], content=msg["content"]) for msg in history],
                     model=config.get("model"), temperature=temperature, timeout=int(timeout),
                     response_format=response_format, max_tokens=max_tokens, top_p=top_p,
-                ):
-                    segment += part.get("content") or ""
-                    if part.get("finish_reason"):
-                        finish_reason = part["finish_reason"]
+                )
+                async with aclosing(stream):
+                    async for part in stream:
+                        text = part.get("content") or ""
+                        segment += text
+                        if text:
+                            yield text
+                        if part.get("finish_reason"):
+                            finish_reason = part["finish_reason"]
                 completed_calls += 1
                 if self._usage_callback:
                     self._usage_callback()
@@ -197,7 +244,6 @@ class LLMService:
             raise HTTPException(status_code=500, detail=f"AI 未返回有效内容（结束原因: {finish_reason or '未知'}），请稍后重试或联系管理员")
         if self._record_usage:
             await self.usage_service.increment("api_request_count", completed_calls, quota=config.get("_quota"))
-        return full_response
 
     async def _resolve_llm_config(self, user_id: Optional[int]) -> Dict[str, Any]:
         if user_id:

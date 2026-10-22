@@ -35,6 +35,7 @@ class ConverseRequest(BaseModel):
 
     user_input: Dict[str, Any]
     conversation_state: Dict[str, Any]
+    client_msg_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
 
 
 class ChapterGenerationStatus(str, Enum):

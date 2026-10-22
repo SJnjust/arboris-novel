@@ -31,6 +31,8 @@ class PromptRead(PromptBase):
     """对外暴露的 Prompt 数据结构。"""
 
     id: int
+    version: int = 1
+    is_customized: bool = False
 
     class Config:
         from_attributes = True
@@ -52,6 +54,8 @@ class PromptRead(PromptBase):
                 "title": getattr(obj, "title", None),
                 "content": getattr(obj, "content", None),
                 "tags": processed,
+                "version": getattr(obj, "version", 1),
+                "is_customized": getattr(obj, "is_customized", False),
             }
             return super().model_validate(data, *args, **kwargs)
         return super().model_validate(obj, *args, **kwargs)
