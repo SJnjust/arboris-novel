@@ -2,12 +2,12 @@
 <template>
   <div class="fade-in">
     <!-- 加载状态 -->
-    <div v-if="loading || !uiControl" class="flex justify-center items-center p-4">
+    <div v-if="loading" class="flex justify-center items-center p-4">
       <div class="loader"></div>
     </div>
 
     <!-- 单选题 -->
-    <div v-else-if="uiControl.type === 'single_choice'">
+    <div v-else-if="uiControl?.type === 'single_choice' && uiControl.options?.length">
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
         <button
           v-for="option in uiControl.options"
@@ -58,11 +58,11 @@
       </form>
     </div>
 
-    <!-- 文本输入 -->
-    <form v-else-if="uiControl.type === 'text_input'" @submit.prevent="handleTextSubmit" class="flex items-center gap-3">
+    <!-- 文本输入（也是缺失或未知控件类型时的兜底，保证始终可以输入） -->
+    <form v-else @submit.prevent="handleTextSubmit" class="flex items-center gap-3">
       <textarea
         v-model="textInput"
-        :placeholder="uiControl.placeholder || '请输入...'"
+        :placeholder="uiControl?.placeholder || '请输入...'"
         class="w-full px-4 py-3 border border-gray-300 rounded-2xl focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 outline-none transition-all resize-none overflow-y-auto leading-relaxed"
         required
         ref="textInputRef"

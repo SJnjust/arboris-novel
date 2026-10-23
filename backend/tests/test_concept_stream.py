@@ -211,3 +211,28 @@ async def test_lossless_quote_repair_keeps_sync_and_stream_contract(client, auth
     replay = await client.post(f'/api/novels/{project}/concept/converse', headers=auth, json=body)
     replay = await complete_operation(client, auth, replay)
     assert replay.json() == streamed[-1][1]
+
+
+@pytest.mark.parametrize('control, expected', [
+    (None, {'type': 'text_input', 'options': None, 'placeholder': None}),
+    ({'type': 'text'}, {'type': 'text_input', 'options': None, 'placeholder': None}),
+    ({'type': 'single_choice', 'options': []}, {'type': 'text_input', 'options': None, 'placeholder': None}),
+    ({'type': 'multiple_choice', 'options': ['悬疑', {'text': '奇幻'}, '']},
+     {'type': 'single_choice', 'options': [{'id': '1', 'label': '悬疑'}, {'id': '2', 'label': '奇幻'}], 'placeholder': None}),
+    ({'type': 'text_input', 'options': [{'id': 'a', 'label': '忽略'}], 'placeholder': '说说主角'},
+     {'type': 'text_input', 'options': None, 'placeholder': '说说主角'}),
+])
+async def test_ui_control_is_normalized_so_the_input_always_renders(client, auth, project, database, monkeypatch, control, expected):
+    payload = {'ai_message': '继续说说吧', 'conversation_state': {}, 'is_complete': False}
+    if control is not None:
+        payload['ui_control'] = control
+    async def stream(**kwargs):
+        yield {'content': json.dumps(payload, ensure_ascii=False), 'finish_reason': 'stop'}
+    model(monkeypatch, stream)
+    body = {'user_input': {'value': '灵感'}, 'conversation_state': {}, 'client_msg_id': 'ui-turn'}
+    async with client.stream('POST', f'/api/novels/{project}/concept/converse/stream', headers=auth, json=body) as response:
+        data = frames((await response.aread()).decode())
+    assert data[-1][0] == 'final' and data[-1][1]['ui_control'] == expected
+    async with database() as session:
+        stored = (await session.scalars(select(NovelConversation).where(NovelConversation.role == 'assistant'))).one()
+        assert json.loads(stored.content)['ui_control'] == {key: value for key, value in expected.items() if value is not None}
