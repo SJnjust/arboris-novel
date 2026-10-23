@@ -27,7 +27,8 @@ async def test_concept_round_persists_ordered_conversation(client, auth, project
         assert json.loads(records[0].content) == {"value": "从失踪目录开始"}
         assert json.loads(records[1].content) == CONCEPT
     call = llm.calls[0][1]
-    assert call["timeout"] == 240
+    from app.core.config import settings
+    assert call["timeout"] == settings.llm_job_deadline_seconds
     assert call["messages"][-1].role == "user"
 
 

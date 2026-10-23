@@ -71,7 +71,7 @@ async def test_fixed_embedding_config_needs_no_session_and_records_completion(ll
     create = AsyncMock(return_value=response)
 
     @asynccontextmanager
-    async def sdk(*args):
+    async def sdk(*args, **kwargs):
         yield SimpleNamespace(embeddings=SimpleNamespace(create=create))
 
     monkeypatch.setattr(llm_service, "openai_client", sdk)

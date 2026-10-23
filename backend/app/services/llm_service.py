@@ -8,9 +8,11 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 from fastapi import HTTPException, status
-from openai import APIConnectionError, APITimeoutError, InternalServerError
+from openai import APIConnectionError, APITimeoutError, InternalServerError, BadRequestError
 
 from ..core.config import settings
+from ..core.llm_policy import generation_deadline, read_timeout
+from ..core.llm_options import reasoning_effort
 from ..repositories.llm_config_repository import LLMConfigRepository
 from ..repositories.system_config_repository import SystemConfigRepository
 from ..repositories.user_repository import UserRepository
@@ -53,6 +55,7 @@ class LLMService:
         response_format: Optional[str] = "json_object",
         max_tokens: Optional[int] = None,
         top_p: Optional[float] = None,
+        structured: bool = False,
     ) -> str:
         messages = [{"role": "system", "content": system_prompt}, *conversation_history]
         return await self._stream_and_collect(
@@ -62,7 +65,7 @@ class LLMService:
             timeout=timeout,
             response_format=response_format,
             max_tokens=max_tokens,
-            top_p=top_p,
+            top_p=top_p, structured=structured,
         )
 
     async def generate(
@@ -76,6 +79,7 @@ class LLMService:
         max_tokens: Optional[int] = None,
         response_format: Optional[str] = None,
         top_p: Optional[float] = None,
+        structured: bool = False,
     ) -> str:
         """兼容旧版接口的文本生成入口，统一走 get_llm_response。"""
         return await self.get_llm_response(
@@ -86,7 +90,7 @@ class LLMService:
             timeout=timeout,
             response_format=response_format,
             max_tokens=max_tokens,
-            top_p=top_p,
+            top_p=top_p, structured=structured,
         )
 
     async def get_summary(
@@ -113,16 +117,19 @@ class LLMService:
     async def _stream_and_collect(
         self, messages: List[Dict[str, str]], *, temperature: float,
         user_id: Optional[int], timeout: float, response_format: Optional[str] = None,
-        max_tokens: Optional[int] = None, top_p: Optional[float] = None,
+        max_tokens: Optional[int] = None, top_p: Optional[float] = None, structured: bool = False,
     ) -> str:
         async def operation():
             config = self._fixed_config or await self._resolve_llm_config(user_id)
+            if structured:
+                config = {**config, "model": config.get("structured_model") or config.get("model"),
+                          "reasoning_effort": config.get("structured_reasoning_effort") or config.get("reasoning_effort")}
             return await self._collect(messages, config=config, temperature=temperature,
                                        user_id=user_id, timeout=timeout, response_format=response_format,
                                        max_tokens=max_tokens, top_p=top_p)
 
         try:
-            return await asyncio.wait_for(operation(), timeout=min(timeout, settings.llm_deadline_seconds))
+            return await asyncio.wait_for(operation(), timeout=generation_deadline(timeout))
         except asyncio.TimeoutError as exc:
             raise HTTPException(status_code=504, detail="AI 生成超过总时限，请稍后重试或缩小生成范围") from exc
 
@@ -134,7 +141,7 @@ class LLMService:
     ):
         """逐段返回文本；配置、续写与流关闭均在同一个总 deadline 内。"""
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + min(timeout, settings.llm_deadline_seconds)
+        deadline = loop.time() + generation_deadline(timeout)
         try:
             resolved = config or self._fixed_config
             if resolved is None:
@@ -169,6 +176,7 @@ class LLMService:
 
     async def _stream_body(self, messages, *, config, temperature, user_id, timeout,
                        response_format, max_tokens, top_p):
+        timeout = generation_deadline(timeout)
         client = LLMClient(api_key=config["api_key"], base_url=config.get("base_url"))
         full_response = ""
         finish_reason = None
@@ -180,7 +188,8 @@ class LLMService:
                 finish_reason = None
                 stream = client.stream_chat(
                     messages=[ChatMessage(role=msg["role"], content=msg["content"]) for msg in history],
-                    model=config.get("model"), temperature=temperature, timeout=int(timeout),
+                    model=config.get("model"), temperature=temperature, timeout=timeout, read_timeout=read_timeout(),
+                    reasoning_effort=reasoning_effort(config.get("reasoning_effort")),
                     response_format=response_format, max_tokens=max_tokens, top_p=top_p,
                 )
                 async with aclosing(stream):
@@ -203,6 +212,12 @@ class LLMService:
                     raise HTTPException(status_code=500, detail="AI 响应因长度限制被截断，续写 2 次后仍未完成，请缩小生成范围")
                 history = [*messages, {"role": "assistant", "content": full_response},
                            {"role": "user", "content": "请从上一段最后一个字符之后继续，只返回后续正文，不要重复已生成的内容。"}]
+        except BadRequestError as exc:
+            logger.exception("模型请求参数被上游拒绝")
+            detail = "AI 服务拒绝请求，请检查模型与参数设置后重试"
+            if config.get("reasoning_effort") and (getattr(exc, "param", None) == "reasoning_effort" or "reasoning_effort" in str(getattr(exc, "body", ""))):
+                detail = "当前中转或模型不支持 reasoning_effort，请清空推理设置（含全局及结构化覆盖），或更换支持该参数的中转/模型"
+            raise HTTPException(status_code=400, detail=detail) from exc
         except InternalServerError as exc:
             detail = "AI 服务内部错误，请稍后重试"
             logger.error(
@@ -236,29 +251,20 @@ class LLMService:
             await self.usage_service.increment("api_request_count", completed_calls, quota=config.get("_quota"))
 
     async def _resolve_llm_config(self, user_id: Optional[int]) -> Dict[str, Any]:
-        if user_id:
-            config = await self.llm_repo.get_by_user(user_id)
-            if config and config.llm_provider_api_key:
-                return {
-                    "api_key": config.llm_provider_api_key,
-                    "base_url": config.llm_provider_url,
-                    "model": config.llm_provider_model,
-                }
-
-        api_key = await self._get_config_value("llm.api_key")
-        base_url = await self._get_config_value("llm.base_url")
-        model = await self._get_config_value("llm.model")
-
+        personal = await self.llm_repo.get_by_user(user_id) if user_id else None
+        api_key = (personal.llm_provider_api_key if personal else None) or await self._get_config_value("llm.api_key") or settings.openai_api_key
         if not api_key:
-            logger.error("未配置默认 LLM API Key，且用户 %s 未设置自定义 API Key", user_id)
-            raise HTTPException(
-                status_code=500,
-                detail="未配置默认 LLM API Key，请联系管理员配置系统默认 API Key 或在个人设置中配置自定义 API Key"
-            )
-
-        # 只有配置完整时才预留，避免配置失败留下无法归还的计数。
-        quota = {"user_id": user_id, "date": await self._enforce_daily_limit(user_id)} if user_id else None
-        return {"api_key": api_key, "base_url": base_url, "model": model, "_quota": quota}
+            raise HTTPException(status_code=500, detail="未配置默认 LLM API Key，请联系管理员配置系统默认 API Key 或在个人设置中配置自定义 API Key")
+        own_key = bool(personal and personal.llm_provider_api_key)
+        base_url = personal.llm_provider_url if own_key else (await self._get_config_value("llm.base_url") or (str(settings.openai_base_url) if settings.openai_base_url else None))
+        model = (personal.llm_provider_model if personal else None) or await self._get_config_value("llm.model") or settings.openai_model_name
+        options = {}
+        for name in ("reasoning_effort", "structured_model", "structured_reasoning_effort"):
+            # 有个人配置时可明确留空，不能被全局强度重新填回而无法关闭参数。
+            options[name] = getattr(personal, name, None) if personal is not None else (await self._get_config_value("llm." + name) or getattr(settings, "llm_" + name))
+        # 个人参数可覆盖默认参数；只有自带 key 时才免系统每日额度。
+        quota = {"user_id": user_id, "date": await self._enforce_daily_limit(user_id)} if user_id and not own_key else None
+        return {"api_key": api_key, "base_url": base_url, "model": model, "_quota": quota, **options}
 
     async def get_embedding(
         self,
@@ -312,8 +318,8 @@ class LLMService:
             api_key = await self._get_config_value("embedding.api_key") or config["api_key"]
             base_url = await self._get_config_value("embedding.base_url") or config.get("base_url")
             try:
-                async with openai_client(api_key, base_url) as client:
-                    response = await asyncio.wait_for(client.embeddings.create(input=text, model=target_model), settings.llm_deadline_seconds)
+                async with openai_client(api_key, base_url, read_timeout=read_timeout()) as client:
+                    response = await asyncio.wait_for(client.embeddings.create(input=text, model=target_model), generation_deadline(settings.llm_deadline_seconds))
             except Exception as exc:  # pragma: no cover - 网络或鉴权失败
                 logger.error(
                     "OpenAI 嵌入请求失败: model=%s base_url=%s user_id=%s error=%s",

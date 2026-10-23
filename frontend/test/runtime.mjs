@@ -84,7 +84,7 @@ export async function runtime(fetcher, saved = storage()) {
     const code = ts.transpileModule(`${script}\n${suffix}`, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText
     return new SourceTextModule(code, { context, identifier: name, initializeImportMeta: meta => { meta.env = { MODE: 'production' } } })
   }
-  for (const [name, path] of [['@/utils/errors', '../src/utils/errors.ts'], ['@/composables/useUnsavedChanges', '../src/composables/useUnsavedChanges.ts'], ['@/composables/useBodyDraft', '../src/composables/useBodyDraft.ts'], ['@/api/novel', '../src/api/novel.ts'], ['@/utils/volumes', '../src/utils/volumes.ts'], ['useJob', '../src/composables/useJob.ts'], ['@/composables/useVolumeJobs', '../src/composables/useVolumeJobs.ts']]) {
+  for (const [name, path] of [['@/utils/errors', '../src/utils/errors.ts'], ['@/composables/useUnsavedChanges', '../src/composables/useUnsavedChanges.ts'], ['@/composables/useBodyDraft', '../src/composables/useBodyDraft.ts'], ['@/api/novel', '../src/api/novel.ts'], ['@/api/llm', '../src/api/llm.ts'], ['@/utils/volumes', '../src/utils/volumes.ts'], ['useJob', '../src/composables/useJob.ts'], ['@/composables/useVolumeJobs', '../src/composables/useVolumeJobs.ts']]) {
     const source = await readFile(new URL(path, import.meta.url), 'utf8')
     const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText
     const module = new SourceTextModule(code, { context, identifier: name, initializeImportMeta: meta => { meta.env = { MODE: 'production' } } })
@@ -117,12 +117,15 @@ export async function runtime(fetcher, saved = storage()) {
     async component(path, names, store, props = {}, alerts = {}) {
       alertHandlers = alerts
       context.defineProps = () => props
+      context.withDefaults = (value, defaults) => ({ ...defaults, ...value })
       const emitted = []
       context.defineEmits = () => (...args) => emitted.push(args)
       modules.set('@/stores/novel', synthetic({ useNovelStore: () => store }))
       modules.set('vue-router', synthetic({ useRouter: () => ({ push: path => redirects.push(path), replace: path => redirects.push(path) }), useRoute: () => ({ query: {}, params: { id: 'project-1' } }), onBeforeRouteLeave: fn => leaveGuards.push(fn), onBeforeRouteUpdate: fn => updateGuards.push(fn) }))
       modules.set('@/composables/useAlert', synthetic({ globalAlert: alerts }))
       modules.set('marked', synthetic({ marked }))
+      modules.set('@/api/admin', synthetic({ AdminAPI: {} }))
+      modules.set('@/utils/date', synthetic({ formatDateTime: value => String(value) }))
       const mounted = []
       const unmounted = []
       const componentVue = synthetic({ ...vue, onMounted: fn => mounted.push(fn), onUnmounted: fn => unmounted.push(fn) })

@@ -276,10 +276,16 @@ npm run build-only
 | `AI_JOB_USER_CONCURRENCY` | 2 | 每用户活动任务数，1–16 |
 | `AI_JOB_RETENTION_DAYS` | 7 | 终态任务及幂等记录保留天数；提交时最多每小时清理一次 |
 | `CHAPTER_SUMMARY_BACKFILL_LIMIT` | 5 | 只回补最近 N 个已确认章节的缺失摘要，0–50 |
-| `LLM_DEADLINE_SECONDS` | 600 | 单次逻辑生成（含最多两次纯文本续写）的总上限，仍取调用方 timeout 的较小值 |
+| `LLM_DEADLINE_SECONDS` | 600 | 前台同步/流式逻辑调用（含纯文本续写）总上限，仍取调用方 timeout 的较小值；最大 600s |
+| `LLM_JOB_DEADLINE_SECONDS` | 1200 | JobRunner/后台维护中单次逻辑调用总上限，0–7200s（不含 0）；覆盖旧的 120/300/480/600s 调用参数 |
+| `LLM_JOB_READ_TIMEOUT_SECONDS` | 1200 | 后台 SDK 每次读取的静默上限，0–7200s；建议不小于后台总时限，避免推理首次输出前先断开 |
+| `OUTLINE_BATCH_SIZE` | 15 | 卷大纲每批 5–20 章；失败后按已保存的连续章号续跑，可改小后继续 |
+| `LLM_REASONING_EFFORT` | 空 | 主模型推理强度；空值不发送参数 |
+| `LLM_STRUCTURED_MODEL` | 空 | 蓝图核心、分卷/智能分卷、卷大纲和续写大纲的模型覆盖；空值沿用主模型 |
+| `LLM_STRUCTURED_REASONING_EFFORT` | 空 | 这些结构化任务的推理强度覆盖；空值沿用主推理强度 |
 | `HTTP_REQUEST_DEADLINE_SECONDS` | 90 | 仅显式标记的短接口（任务提交/查询/取消、卷规划编辑）的时限，最大 95s，超时返回中文 504 |
 
-SDK 传输超时为 connect=10/read=90/write=30/pool=10 秒，重试 1 次；客户端按凭据/地址缓存，最多 64 个空闲/在用缓存项（全在用时临时实例在调用结束关闭）。纯文本因 length 截断时最多续写两次；JSON 不续写，返回明确错误。JSON 统一由 parse_llm_json 做无损修复（包裹、尾逗号等）；所有业务调用显式禁止补齐截断字符串/容器或丢弃尾部元素。需要补齐或丢元素的解析必须使用 allow_lossy=True，目前没有业务调用启用。残缺 JSON 章节版本不会作为普通正文保存。
+SDK 前台传输超时仍为 connect=10/read=90/write=30/pool=10 秒，后台仅 read 改用上述配置；重试 1 次。客户端按凭据/地址/read 时限缓存，避免前台复用后台的长读取时限，最多 64 个空闲/在用缓存项（全在用时临时实例在调用结束关闭）。纯文本因 length 截断时最多续写两次；JSON 不续写，返回明确错误。JSON 统一由 parse_llm_json 做无损修复（包裹、尾逗号等）；所有业务调用显式禁止补齐截断字符串/容器或丢弃尾部元素。需要补齐或丢元素的解析必须使用 allow_lossy=True，目前没有业务调用启用。残缺 JSON 章节版本不会作为普通正文保存。
 
 部署必须保持 **单个 uvicorn worker**（现有 supervisord.conf 已设置 workers=1）：任务引用、准入锁和取消信号保存在单进程中。启动先初始化数据库，再将上次 queued/running 任务标记为中断失败，修复 generating/evaluating/selecting 章节；退出时取消任务并关闭模型连接池。SQLite 自动启用 WAL 和 30 秒 busy timeout。
 
@@ -312,7 +318,7 @@ SDK 传输超时为 connect=10/read=90/write=30/pool=10 秒，重试 1 次；客
 
 ### 自动分卷与分步蓝图（R3）
 
-`POST /api/novels/{id}/blueprint/generate` 现在返回 **202 `{job_id}`**。按核心设定 → 分卷规划 → 第 1 卷大纲（每批最多 15 章）执行，前端复用 useJob 轮询，不让整个生成过程占用一个长 HTTP 请求。请求可带 Idempotency-Key 和 `{ "resume": true }`（默认）；失败/取消后以新任务续跑已保存的检查点。显式 `{ "resume": false }` 重新规划，但仍保留已有正文对应的大纲。蓝图确认页能显示“第 X 卷 · x/y 批”、取消和刷新恢复；进入灵感模式创建项目后会将项目 ID 留在 URL。
+`POST /api/novels/{id}/blueprint/generate` 现在返回 **202 `{job_id}`**。按核心设定 → 分卷规划 → 第 1 卷大纲（每批按 OUTLINE_BATCH_SIZE，默认 15 章）执行，前端复用 useJob 轮询，不让整个生成过程占用一个长 HTTP 请求。请求可带 Idempotency-Key 和 `{ "resume": true }`（默认）；失败/取消后以新任务续跑已保存的检查点。显式 `{ "resume": false }` 重新规划，但仍保留已有正文对应的大纲。蓝图确认页能显示“第 X 卷 · x/y 批”、取消和刷新恢复；进入灵感模式创建项目后会将项目 ID 留在 URL。
 
 | 接口 | 行为 |
 | --- | --- |
@@ -330,7 +336,32 @@ SDK 传输超时为 connect=10/read=90/write=30/pool=10 秒，重试 1 次；客
 
 旧项目没有卷记录时，序列化为 1–最大已有章号的虚拟单卷；空项目不虚构章号。原平铺 chapter_outline 字段保留，新增 volumes、total_chapters、volume_number，目录按卷折叠显示“已写 / 已有大纲 / 计划章数”。手工编辑产生的未分配章节仍在“未分卷章节”中可见。修改梗概不会自动重写已经存在的大纲，卷任务补齐缺失部分；重新生成蓝图可重做未写正文的大纲。
 
-启动迁移通过 inspector 检查后补齐旧表字段，创建 novel_volumes，并将中断卷的 outlining 改回 planned，保留 cursor。只支持已有的 SQLite/MySQL；仍须部署为单 uvicorn worker。兼容的同步 `/chapters/outline` 接口保留，限制单次 1–15 章并使用有界上下文；正常的按卷生成走后台任务。
+启动迁移通过 inspector 检查后补齐旧表字段，创建 novel_volumes，并将中断卷的 outlining 改回 planned，保留 cursor。只支持已有的 SQLite/MySQL；仍须部署为单 uvicorn worker。原同步 `/chapters/outline` 路径保留为 202 任务提交，限制单次 1–15 章并使用有界上下文；正常按卷生成使用可配置的 5–20 章批次。
+
+### 慢推理、中转与失败续跑
+
+个人「LLM 设置」可配置主推理强度、结构化模型和结构化推理强度，与现有 URL/key/model 一起保存。存在个人配置时，这三个新可选项以个人配置为准：主推理强度留空不发参数，结构化覆盖留空使用主配置；没有个人配置时才使用全局三项；模型名原样传给中转，不自动改名。允许 none/minimal/low/medium/high/xhigh，具体支持值由模型和中转决定。
+
+通过 Chat Completions 的 reasoning_effort 发送；指定强度时不额外发送 temperature/top_p，避免推理模型拒绝采样参数。空值保持原有请求。中转返回“不支持 reasoning_effort”的 400 时，会明确提示清空个人/全局/结构化推理设置或更换中转，不自动降低强度重试，以免无意改变用户选择或重复计费。
+
+对于 GPT-6.1 + xhigh + 中转，建议正文继续用主模型 xhigh，结构化任务优先 low（或 medium），从每批 5 章开始：
+
+```dotenv
+LLM_JOB_DEADLINE_SECONDS=1800
+LLM_JOB_READ_TIMEOUT_SECONDS=1800
+OUTLINE_BATCH_SIZE=5
+LLM_REASONING_EFFORT=xhigh
+LLM_STRUCTURED_MODEL=gpt-6.1
+LLM_STRUCTURED_REASONING_EFFORT=low
+```
+
+模型名需使用中转实际支持的标识。新环境变量见 backend/env.example；修改后重启服务。既有系统配置数据库值优先于环境初始值，已有 llm.* 记录可在管理后台修改；已有个人配置的用户请在「LLM 设置」填主强度 xhigh、结构化模型（可留空沿用主模型）和结构化强度 low；上述全局推理示例只用于没有个人配置的用户。不会在代码升级时改写部署者的 .env 或定制提示词。
+
+蓝图先保存核心检查点，再完整保存分卷规划，然后逐批保存大纲；第三步失败时可能出现“已有分卷、没有大纲”或只有部分大纲，这是已保存进度。失败卡片显示具体步骤与原因，并保留「从这里继续」。详情概览会列出尚无大纲的卷并引导到生成入口，写作台目录和卷计划也逐卷提示；成功后仍在原 chapter_outline 字段显示，不丢失已完成批次。
+
+长篇规划本轮保留整份规划原子校验/落库，避免引入半完成卷边界状态；改用严格输出预算：超过 6 卷时卷名≤40字、梗概≤120字，主线/冲突/高潮/钩子/伏笔各≤80字。普通规划分别为60/240/160字。大纲标题≤80字、摘要≤300字；超长或残缺整批拒绝，可从已有检查点继续。相关发行提示词已升级版本号，定制模板仍保留，调用时附加输出契约。
+
+灵感 SSE 等待响应头超过 45 秒，或收到响应后超过 45 秒完全收不到字节（包括 ping）会停止等待，保留本轮并提示「连接中断，请重试本轮」；持续 ping 会重置静默计时，不是整轮 45 秒上限。前台原总时限及 SDK read=90 秒保持不变。
 
 ### 打包与构建
 

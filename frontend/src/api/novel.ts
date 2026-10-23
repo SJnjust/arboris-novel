@@ -8,7 +8,7 @@ export const API_BASE_URL = import.meta.env.MODE === 'production' ? '' : 'http:/
 export const API_PREFIX = '/api'
 
 // 统一的请求处理函数
-export type RequestOptions = RequestInit & { timeoutMs?: number | null }
+export type RequestOptions = RequestInit & { timeoutMs?: number | null; headersTimeoutMs?: number }
 
 import { formatApiDetail } from '@/utils/errors'
 export { formatApiDetail, redactSensitiveText, errorMessage } from '@/utils/errors'
@@ -24,12 +24,14 @@ export class ApiError extends Error {
 }
 
 export const request = async (url: string, options: RequestOptions = {}, readResponse: (response: Response, signal: AbortSignal) => Promise<any> = response => response.json()) => {
-  const { timeoutMs = 30000, signal, ...init } = options
+  const { timeoutMs = 30000, headersTimeoutMs, signal, ...init } = options
   const controller = new AbortController()
   const abort = () => controller.abort(signal?.reason)
   if (signal?.aborted) abort()
   else signal?.addEventListener('abort', abort, { once: true })
   let timedOut = false
+  let headersTimedOut = false
+  const headersTimer = headersTimeoutMs === undefined ? undefined : setTimeout(() => { headersTimedOut = true; controller.abort() }, headersTimeoutMs)
   const timer = timeoutMs === null ? undefined : setTimeout(() => { timedOut = true; controller.abort() }, timeoutMs)
   const authStore = useAuthStore()
   const headers = new Headers(options.headers)
@@ -46,6 +48,7 @@ export const request = async (url: string, options: RequestOptions = {}, readRes
 
   try {
     const response = await fetch(url, { ...init, headers, signal: controller.signal })
+    if (headersTimer !== undefined) clearTimeout(headersTimer)
 
     if (response.status === 401) {
       // Token 失效或未授权
@@ -61,10 +64,12 @@ export const request = async (url: string, options: RequestOptions = {}, readRes
 
     return await readResponse(response, controller.signal)
   } catch (error) {
+    if (headersTimedOut) throw new ConceptStreamError('连接中断，请重试本轮')
     if (timedOut) throw new Error('请求超时，请重试')
     throw error
   } finally {
     if (timer !== undefined) clearTimeout(timer)
+    if (headersTimer !== undefined) clearTimeout(headersTimer)
     signal?.removeEventListener('abort', abort)
   }
 }
@@ -73,7 +78,7 @@ export class ConceptStreamError extends Error {
   constructor(message: string, public retryable = true) { super(message) }
 }
 
-export async function readConceptEvents(response: Response, onDelta: (text: string) => void, signal: AbortSignal): Promise<ConverseResponse> {
+export async function readConceptEvents(response: Response, onDelta: (text: string) => void, signal: AbortSignal, idleTimeoutMs = 45000): Promise<ConverseResponse> {
   if (!response.body) throw new ConceptStreamError('未收到对话内容，请重试本轮')
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
@@ -83,7 +88,16 @@ export async function readConceptEvents(response: Response, onDelta: (text: stri
   try {
     while (true) {
       if (signal.aborted) throw signal.reason
-      const { done, value } = await reader.read()
+      let idleTimer: ReturnType<typeof setTimeout> | undefined
+      const stalled = new Promise<never>((_, reject) => {
+        idleTimer = setTimeout(() => {
+          reject(new ConceptStreamError('连接中断，请重试本轮'))
+          void reader.cancel().catch(() => {})
+        }, idleTimeoutMs)
+      })
+      const { done, value } = await Promise.race([reader.read(), stalled]).finally(() => {
+        if (idleTimer !== undefined) clearTimeout(idleTimer)
+      })
       if (signal.aborted) throw signal.reason
       buffer += decoder.decode(value, { stream: !done })
       let boundary: RegExpExecArray | null
@@ -121,6 +135,7 @@ export async function readConceptEvents(response: Response, onDelta: (text: stri
 
 export interface ConceptStreamOptions {
   clientMsgId: string
+  idleTimeoutMs?: number
   onDelta?: (text: string) => void
   signal?: AbortSignal
 }
@@ -137,7 +152,7 @@ export interface AIJob {
   progress: number
   payload: { start_chapter?: number; num_chapters?: number; dimension?: string; additional_notes?: string; chapter_number?: number; writing_notes?: string; volume_number?: number; resume?: boolean }
   result: { id?: string; optimized_content?: string; optimization_notes?: string; emotion_points?: any[]; total_chapters?: number; average_intensity?: number; emotion_distribution?: Record<string, number>; version_count?: number; failed_versions?: Array<{ index: number; detail: unknown }>; project_id?: string; completed_volumes?: number[]; volume_count?: number } | null
-  error: { detail: unknown; status_code: number } | null
+  error: { detail: unknown; status_code: number; stage?: string; step?: string } | null
   created_at: string
   updated_at: string
   heartbeat_at: string
@@ -330,10 +345,10 @@ export class NovelAPI {
 
   static async converseConceptStream(projectId: string, userInput: any, conversationState: any, options: ConceptStreamOptions): Promise<ConverseResponse> {
     return request(`${NOVELS_BASE}/${projectId}/concept/converse/stream`, {
-      method: 'POST', timeoutMs: null, signal: options.signal,
+      method: 'POST', timeoutMs: null, headersTimeoutMs: options.idleTimeoutMs ?? 45000, signal: options.signal,
       headers: { Accept: 'text/event-stream' },
       body: JSON.stringify({ user_input: userInput || { id: null, value: null }, conversation_state: conversationState, client_msg_id: options.clientMsgId })
-    }, (response, signal) => readConceptEvents(response, options.onDelta || (() => {}), signal))
+    }, (response, signal) => readConceptEvents(response, options.onDelta || (() => {}), signal, options.idleTimeoutMs))
   }
 
   static async generateBlueprint(projectId: string, key?: string, options: RequestOptions & { resume?: boolean } = {}): Promise<JobSubmitted> {

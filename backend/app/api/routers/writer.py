@@ -356,7 +356,7 @@ async def _execute_generate_chapters_outline(
     response = await llm_service.get_llm_response(
         system_prompt=outline_prompt,
         conversation_history=[{"role": "user", "content": prompt_input}],
-        temperature=0.7,
+        temperature=0.7, structured=True,
         user_id=current_user.id,
     )
     

@@ -23,9 +23,9 @@ _CLIENT_LIMIT = 64
 
 
 @asynccontextmanager
-async def openai_client(api_key, base_url=None):
+async def openai_client(api_key, base_url=None, *, read_timeout=90):
     """按凭据/地址复用连接池；只淘汰空闲实例，不关闭在用流。"""
-    key = (api_key, str(base_url) if base_url else None)
+    key = (api_key, str(base_url) if base_url else None, read_timeout)
     entry = _CLIENTS.get(key)
     evicted = None
     if entry is None:
@@ -35,7 +35,7 @@ async def openai_client(api_key, base_url=None):
                 evicted = _CLIENTS.pop(idle)
         entry = _ClientEntry(AsyncOpenAI(
             api_key=api_key, base_url=key[1], max_retries=1,
-            timeout=httpx.Timeout(connect=10, read=90, write=30, pool=10),
+            timeout=httpx.Timeout(connect=10, read=read_timeout, write=30, pool=10),
         ))
         if len(_CLIENTS) < _CLIENT_LIMIT:
             _CLIENTS[key] = entry
@@ -88,7 +88,9 @@ class LLMClient:
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
-        timeout: int = 120,
+        timeout: float = 120,
+        read_timeout: float = 90,
+        reasoning_effort: Optional[str] = None,
         **kwargs,
     ) -> AsyncGenerator[Dict[str, str], None]:
         payload = {
@@ -99,15 +101,17 @@ class LLMClient:
         }
         if response_format:
             payload["response_format"] = {"type": response_format}
-        if temperature is not None:
+        if reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort
+        if temperature is not None and not reasoning_effort:
             payload["temperature"] = temperature
-        if top_p is not None:
+        if top_p is not None and not reasoning_effort:
             payload["top_p"] = top_p
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
 
         # timeout 是调用层总 deadline；不覆盖连接池的四项传输超时。
-        async with openai_client(self._key, self._base_url) as client:
+        async with openai_client(self._key, self._base_url, read_timeout=read_timeout) as client:
             stream = await client.chat.completions.create(**payload)
             try:
                 async for chunk in stream:

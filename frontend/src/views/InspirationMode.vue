@@ -262,7 +262,11 @@ const restoreConversation = async (projectId: string) => {
 
       const lastAssistantMsgStr = project.conversation_history.filter(m => m.role === 'assistant').pop()?.content
       if (lastAssistantMsgStr) {
-        const lastAssistantMsg = JSON.parse(lastAssistantMsgStr)
+        let lastAssistantMsg: any = {}
+        try {
+          const parsed = JSON.parse(lastAssistantMsgStr)
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) lastAssistantMsg = parsed
+        } catch { /* 旧的纯文本/损坏记录仍可展示，输入控件回退文本框。 */ }
         novelStore.currentConversationState = lastAssistantMsg.conversation_state || {}
         
         if (lastAssistantMsg.is_complete) {
@@ -271,14 +275,17 @@ const restoreConversation = async (projectId: string) => {
           showBlueprintConfirmation.value = true
         } else {
           // 否则，恢复对话
-          currentUIControl.value = lastAssistantMsg.ui_control
+          currentUIControl.value = lastAssistantMsg.ui_control || { type: 'text_input' }
         }
       }
       const last = project.conversation_history.at(-1)
       if (last?.role === 'user' && last.metadata?.client_msg_id) {
+        let input
+        try { input = JSON.parse(last.content) }
+        catch { input = { id: 'text_input', value: last.content } }
         showBlueprintConfirmation.value = false
         chatMessages.value.push({ content: '', type: 'ai', clientMsgId: last.metadata.client_msg_id,
-          userInput: JSON.parse(last.content), error: '上一轮尚未完成，请重试本轮', retryable: true })
+          userInput: input, error: '上一轮尚未完成，请重试本轮', retryable: true })
       }
       // 计算当前轮次
       currentTurn.value = project.conversation_history.filter(m => m.role === 'assistant').length

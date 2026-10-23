@@ -38,6 +38,9 @@ SYSTEM_CONFIG_DEFAULTS: list[SystemConfigDefault] = [
         value_getter=lambda config: config.openai_model_name,
         description="默认 LLM 模型名称。",
     ),
+    SystemConfigDefault(key="llm.reasoning_effort", value_getter=lambda config: config.llm_reasoning_effort, description="主模型推理强度；空值不发送参数"),
+    SystemConfigDefault(key="llm.structured_model", value_getter=lambda config: config.llm_structured_model, description="结构化生成模型覆盖"),
+    SystemConfigDefault(key="llm.structured_reasoning_effort", value_getter=lambda config: config.llm_structured_reasoning_effort, description="结构化生成推理强度覆盖"),
     SystemConfigDefault(
         key="smtp.server",
         value_getter=lambda config: config.smtp_server,

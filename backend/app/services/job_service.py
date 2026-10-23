@@ -10,6 +10,8 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from .chapter_maintenance_service import ChapterMaintenanceService
+from ..core.llm_policy import llm_job_context
+from .job_steps import job_step
 from ..models.ai_job import AIJob
 from ..models.novel import Chapter, NovelVolume
 
@@ -29,6 +31,7 @@ class JobContext:
         self.payload = job.payload
         self.session_factory = runner.session_factory
         self.cancelled = False
+        self.stage = job.stage
 
     def check_cancelled(self):
         task = asyncio.current_task()
@@ -37,6 +40,7 @@ class JobContext:
 
     async def advance(self, stage, progress):
         self.check_cancelled()
+        self.stage = stage
         await self.runner._update(self.id, stage=stage, progress=max(0, min(99, progress)))
         self.check_cancelled()
 
@@ -179,7 +183,8 @@ class JobRunner:
             await self._update(job.id, status="running", stage="starting")
             heartbeat = asyncio.create_task(self._heartbeat(job.id), name=f"heartbeat:{job.id}")
             context.check_cancelled()
-            result = await self.handlers[job.kind].run(context)
+            with llm_job_context():
+                result = await self.handlers[job.kind].run(context)
             context.check_cancelled()
             await self._update(job.id, status="succeeded", stage="succeeded", progress=100, result=result)
         except asyncio.CancelledError:
@@ -191,7 +196,7 @@ class JobRunner:
             await self._cleanup(job.kind, context, "failed")
             detail = error.detail if isinstance(error, HTTPException) else "任务执行失败，请稍后重试"
             code = error.status_code if isinstance(error, HTTPException) else 500
-            await self._update(job.id, status="failed", stage="failed", error={"detail": detail, "status_code": code})
+            await self._update(job.id, status="failed", stage="failed", error={"detail": detail, "status_code": code, "stage": context.stage, "step": job_step(context.stage)})
         finally:
             if heartbeat:
                 heartbeat.cancel()
@@ -228,7 +233,8 @@ class JobRunner:
             try:
                 async with self._owned_gate:
                     started = True
-                    await coroutine
+                    with llm_job_context():
+                        await coroutine
             finally:
                 if not started:
                     coroutine.close()

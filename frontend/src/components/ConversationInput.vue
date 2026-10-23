@@ -7,10 +7,10 @@
     </div>
 
     <!-- 单选题 -->
-    <div v-else-if="uiControl?.type === 'single_choice' && uiControl.options?.length">
+    <div v-else-if="hasSingleChoices">
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
         <button
-          v-for="option in uiControl.options"
+          v-for="option in choiceOptions"
           :key="option.id"
           @click="handleOptionSelect(option.id, option.label)"
           class="p-3 bg-indigo-100 text-indigo-700 rounded-lg hover:bg-indigo-200 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-indigo-400"
@@ -94,7 +94,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, watch, onUnmounted } from 'vue'
+import { computed, ref, nextTick, watch, onUnmounted } from 'vue'
 import type { UIControl } from '@/api/novel'
 
 interface Props {
@@ -103,6 +103,16 @@ interface Props {
 }
 
 const props = defineProps<Props>()
+const choiceOptions = computed(() => {
+  const raw: unknown = props.uiControl?.options
+  const values = typeof raw === 'string' ? [raw] : Array.isArray(raw) ? raw : []
+  return values.flatMap((value, index) => {
+    const item = value && typeof value === 'object' ? value : { label: value }
+    const label = String(item.label ?? item.text ?? item.value ?? '').trim()
+    return label ? [{ id: String(item.id ?? index + 1), label }] : []
+  })
+})
+const hasSingleChoices = computed(() => props.uiControl?.type === 'single_choice' && choiceOptions.value.length > 0)
 const emit = defineEmits<{
   submit: [userInput: { id: string; value: string } | null]
   draftChange: [text: string]

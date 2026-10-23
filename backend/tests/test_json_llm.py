@@ -108,7 +108,7 @@ async def test_stream_deadline_does_not_cancel_the_consumer_between_chunks(llm):
 
 async def test_sync_api_deadline_returns_readable_504(client, auth, project, llm, monkeypatch):
     from app.core.config import settings
-    monkeypatch.setattr(settings, "llm_deadline_seconds", 0.01)
+    monkeypatch.setattr(settings, "llm_job_deadline_seconds", 0.01)
     llm.reply("concept", "late", before=lambda: asyncio.sleep(1))
     response = await client.post(f"/api/novels/{project}/concept/converse", headers=auth,
                                  json={"user_input": {"value": "test"}, "conversation_state": {}})
