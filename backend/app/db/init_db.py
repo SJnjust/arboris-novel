@@ -125,6 +125,11 @@ async def _ensure_schema_updates(db_engine=None) -> None:
                     sync_conn.execute(text("ALTER TABLE novel_blueprints ADD COLUMN total_chapters INTEGER NOT NULL DEFAULT 0"))
                 if "generation_state" not in blueprint_columns:
                     sync_conn.execute(text("ALTER TABLE novel_blueprints ADD COLUMN generation_state JSON"))
+            if inspector.has_table("llm_configs"):
+                llm_columns = {col["name"] for col in inspector.get_columns("llm_configs")}
+                for name in ("reasoning_effort", "structured_model", "structured_reasoning_effort"):
+                    if name not in llm_columns:
+                        sync_conn.execute(text(f"ALTER TABLE llm_configs ADD COLUMN {name} TEXT"))
             prompt_columns = {col["name"] for col in inspector.get_columns("prompts")}
             if "version" not in prompt_columns:
                 sync_conn.execute(text("ALTER TABLE prompts ADD COLUMN version INTEGER NOT NULL DEFAULT 0"))

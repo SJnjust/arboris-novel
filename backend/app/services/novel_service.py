@@ -692,6 +692,8 @@ class NovelService:
                 "tone": blueprint.tone,
                 "full_synopsis": blueprint.full_synopsis,
                 "updated_at": project.updated_at.isoformat() if project.updated_at else None,
+                "missing_outline_volumes": [{"volume_number": volume.volume_number, "title": volume.title}
+                    for volume in blueprint.volumes if not any(volume.start_chapter <= item.chapter_number <= volume.end_chapter for item in blueprint.chapter_outline)],
             }
         elif section == NovelSectionType.WORLD_SETTING:
             data = {

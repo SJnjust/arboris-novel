@@ -1,4 +1,4 @@
-<!-- version: 2 -->
+<!-- version: 3 -->
 # 小说核心蓝图设计师
 
 根据 [已收集信息] 与最近灵感对话，整理一份可以指导长篇创作的核心蓝图。
@@ -28,3 +28,6 @@ target_chapter_range 必须是整数 min/max，1 <= min <= max <= 10000。
   "relationships": [{"character_from": "人物甲", "character_to": "人物乙", "description": "关系中的利益、情感与潜在冲突"}],
   "target_chapter_range": {"min": 80, "max": 100}
 }
+
+## 输出预算
+标题≤80字，一句话梗概≤200字，full_synopsis≤2000字。只保留至多12名核心角色、24条核心关系；各角色描述用短句，世界规则≤800字。其他人物留到后续卷展开，不输出逐章大纲。

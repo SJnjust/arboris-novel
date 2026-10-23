@@ -16,6 +16,13 @@ def normalize_volume_plan(data, total_chapters):
     raw = data.get("volumes") if isinstance(data, dict) else None
     if not isinstance(raw, list) or not raw or any(not isinstance(item, dict) for item in raw):
         raise ValueError("卷规划必须包含非空 volumes 数组")
+    many = len(raw) > 6
+    limits = {"title": 40 if many else 60, "summary": 120 if many else 240,
+              **{name: 80 if many else 160 for name in ("main_plot", "core_conflict", "climax", "ending_hook", "foreshadowing")}}
+    for index, item in enumerate(raw, 1):
+        for name, limit in limits.items():
+            if len(str(item.get(name) or "")) > limit:
+                raise ValueError(f"第 {index} 卷的 {name} 超过 {limit} 字，请缩短规划后重试")
     if len(raw) < math.ceil(total / 120):
         raise ValueError("卷规划数量不足：每卷最多 120 章，请重新规划")
     count = min(len(raw), max(1, total // 20))
@@ -56,8 +63,8 @@ def normalize_volume_plan(data, total_chapters):
 
 
 def normalize_outline_batch(data, start, end):
-    if end < start or end - start + 1 > 15:
-        raise ValueError("大纲批次必须为连续的 1–15 章")
+    if end < start or end - start + 1 > 20:
+        raise ValueError("大纲批次必须为连续的 1–20 章")
     raw = data.get("chapters") if isinstance(data, dict) else None
     if not isinstance(raw, list):
         raise ValueError("大纲响应缺少 chapters 数组")
@@ -70,6 +77,8 @@ def normalize_outline_batch(data, start, end):
             continue
         if not isinstance(item.get("title"), str) or not item["title"].strip() or not isinstance(item.get("summary"), str) or not item["summary"].strip():
             raise ValueError(f"第 {number} 章缺少完整标题或摘要")
+        if len(item["title"]) > 80 or len(item["summary"]) > 300:
+            raise ValueError(f"第 {number} 章标题或摘要过长，请缩短后重试")
         result[number] = {"chapter_number": number, "title": item["title"][:255], "summary": item["summary"]}
     missing = [str(number) for number in range(start, end + 1) if number not in result]
     if missing:
@@ -90,3 +99,11 @@ def outline_context(blueprint, volume, previous, recent, start, end):
         "[最近10条大纲]\n" + json.dumps([{ "chapter_number": item.chapter_number, "title": item.title[:200], "summary": (item.summary or "")[:600]} for item in recent[-10:]], ensure_ascii=False),
         f"[本批任务]\n请从第 {start} 章开始，生成至第 {end} 章，逐章完整返回。\n" + json.dumps({"start_chapter": start, "end_chapter": end}, ensure_ascii=False),
     ))
+
+
+def validate_core_lengths(data):
+    for name, limit in {"title": 80, "one_sentence_summary": 200, "full_synopsis": 2000}.items():
+        if len(str(data.get(name) or "")) > limit:
+            raise ValueError("核心设定字段过长")
+    if len(data.get("characters") or []) > 12 or len(data.get("relationships") or []) > 24:
+        raise ValueError("核心角色或关系数量过多")

@@ -123,6 +123,10 @@
               :class="contentCardClass"
               style="border-radius: var(--md-radius-lg);"
             >
+              <div v-if="activeSection === 'overview' && sectionData.overview?.missing_outline_volumes?.length" class="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4 max-h-48 overflow-y-auto flex-shrink-0" role="status">
+                <p v-for="volume in sectionData.overview.missing_outline_volumes" :key="volume.volume_number" class="text-sm text-amber-900">第 {{ volume.volume_number }} 卷大纲尚未生成（{{ volume.title }}）</p>
+                <button v-if="!isAdmin" class="md-btn md-btn-text mt-2" @click="switchSection('chapter_outline')">前往生成 / 续跑卷大纲</button>
+              </div>
               <!-- Loading State -->
               <div v-if="isSectionLoading" class="flex flex-col items-center justify-center py-20 sm:py-28">
                 <div class="md-spinner"></div>
@@ -153,7 +157,7 @@
                 :class="componentContainerClass"
                 @edit="handleSectionEdit"
                 @add="startAddChapter"
-                @updated="reloadSection('chapter_outline', true)"
+                @updated="handlePlanningUpdated"
               />
             </div>
           </div>
@@ -447,6 +451,10 @@ const loadSection = async (section: SectionKey, force = false) => {
   } finally {
     sectionLoading[section] = false
   }
+}
+
+const handlePlanningUpdated = async () => {
+  await Promise.all([loadSection('chapter_outline', true), loadSection('overview', true)])
 }
 
 const reloadSection = (section: SectionKey, force = false) => {

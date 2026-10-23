@@ -57,7 +57,7 @@ async def test_job_states_heartbeat_and_cleanup(client, auth, project, job_runne
     if outcome == "succeeded":
         assert result["progress"] == 100 and result["result"] == {"target": 1}
     elif outcome == "failed":
-        assert result["error"] == {"status_code": 503, "detail": "模拟服务暂时不可用"}
+        assert result["error"] == {"status_code": 503, "detail": "模拟服务暂时不可用", "stage": "working", "step": "working"}
     assert handler.cleaned == ([] if outcome == "succeeded" else [(job.id, outcome)])
     task = job_runner.tasks.get(job.id)
     if task:

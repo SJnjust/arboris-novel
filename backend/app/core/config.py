@@ -1,9 +1,10 @@
 # AIMETA P=应用配置_环境变量加载和设置类|R=配置加载_环境变量|NR=不含业务逻辑|E=settings|X=internal|A=Settings类|D=pydantic|S=fs|RD=./README.ai
+from .llm_options import reasoning_effort, optional_text
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from pydantic import AliasChoices, AnyUrl, Field, HttpUrl, validator
+from pydantic import AliasChoices, AnyUrl, Field, HttpUrl, validator, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL, make_url
 
@@ -87,6 +88,23 @@ class Settings(BaseSettings):
     ai_job_retention_days: int = Field(default=7, ge=1, le=365)
     chapter_summary_backfill_limit: int = Field(default=5, ge=0, le=50)
     llm_deadline_seconds: float = Field(default=600, gt=0, le=600)
+    llm_job_deadline_seconds: float = Field(default=1200, gt=0, le=7200)
+    llm_job_read_timeout_seconds: float = Field(default=1200, gt=0, le=7200)
+    llm_reasoning_effort: Optional[str] = None
+    llm_structured_model: Optional[str] = None
+    llm_structured_reasoning_effort: Optional[str] = None
+    outline_batch_size: int = Field(default=15, ge=5, le=20)
+
+    @field_validator("llm_reasoning_effort", "llm_structured_reasoning_effort", mode="before")
+    @classmethod
+    def validate_reasoning_effort(cls, value):
+        return reasoning_effort(value)
+
+    @field_validator("llm_structured_model", mode="before")
+    @classmethod
+    def validate_structured_model(cls, value):
+        return optional_text(value)
+
     http_request_deadline_seconds: float = Field(default=90, gt=0, le=95)
     concept_ping_seconds: float = Field(default=15, gt=0, le=60)
     embedding_provider: str = Field(

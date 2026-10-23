@@ -9,12 +9,18 @@ export interface LLMConfig {
   llm_provider_url: string | null;
   llm_provider_api_key: string | null;
   llm_provider_model: string | null;
+  reasoning_effort: string | null;
+  structured_model: string | null;
+  structured_reasoning_effort: string | null;
 }
 
 export interface LLMConfigCreate {
   llm_provider_url?: string;
   llm_provider_api_key?: string;
   llm_provider_model?: string;
+  reasoning_effort?: string;
+  structured_model?: string;
+  structured_reasoning_effort?: string;
 }
 
 const getHeaders = () => {

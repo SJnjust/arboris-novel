@@ -1,4 +1,5 @@
-import type { Blueprint, Chapter, ChapterOutline, NovelVolume } from '@/api/novel'
+import { formatApiDetail } from '@/utils/errors'
+import type { AIJob, Blueprint, Chapter, ChapterOutline, NovelVolume } from '@/api/novel'
 
 export const nextOutlineNumber = (outlines: ChapterOutline[] = []) => Math.max(0, ...outlines.map(row => row.chapter_number)) + 1
 
@@ -31,4 +32,9 @@ export function planningStage(stage: string) {
   const batch = /^volume_(\d+)_batch_(\d+)_of_(\d+)$/.exec(stage)
   if (batch) return `第 ${batch[1]} 卷大纲 · ${batch[2]}/${batch[3]} 批`
   return ({ queued: '排队中', starting: '正在准备', succeeded: '已完成', failed: '生成失败', cancelled: '已取消' } as Record<string, string>)[stage] || '正在处理'
+}
+
+export function jobError(job: AIJob) {
+  const label = job.error?.step || planningStage(job.error?.stage || job.stage)
+  return `${label}：${formatApiDetail(job.error?.detail)}`
 }

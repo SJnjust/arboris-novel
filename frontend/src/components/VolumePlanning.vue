@@ -11,11 +11,12 @@
     <button v-if="jobs.error.value" class="md-btn md-btn-text" @click="run(jobs.recover)">重新获取任务状态</button>
     <div v-for="job in jobs.jobs.value" :key="job.id" class="p-3 rounded-lg bg-gray-50" aria-live="polite">
       <p>{{ planningStage(job.stage) }} · {{ job.progress }}%</p>
-      <p v-if="job.status === 'failed'" class="text-red-600">{{ formatApiDetail(job.error?.detail) }}；已保存的进度可继续生成。</p>
+      <p v-if="job.status === 'failed'" class="text-red-600">{{ jobError(job) }}；已保存的进度可继续生成。</p>
       <button v-if="job.status === 'queued' || job.status === 'running'" class="underline" :disabled="jobs.cancelling.value" @click="run(() => jobs.cancel(job.id))">取消生成</button>
     </div>
     <details v-for="group in groups" :key="group.volume_number" open class="border rounded-xl p-4">
       <summary class="cursor-pointer font-medium">{{ group.volume_number ? `第 ${group.volume_number} 卷 · ` : '' }}{{ group.title }} · {{ group.written }} 已写 / {{ group.outlines.length }} 已有大纲 / {{ group.planned }} 计划章数</summary>
+      <p v-if="group.volume_number && !group.outlines.length" class="text-amber-800 bg-amber-50 rounded p-3 mt-3" role="status">第 {{ group.volume_number }} 卷大纲尚未生成，请生成本卷大纲；失败后可续跑已保存的批次。</p>
       <p class="mt-3 whitespace-pre-line">{{ group.summary || '尚无卷梗概' }}</p>
       <dl v-if="group.plan" class="text-sm space-y-2 mt-3">
         <template v-for="(label, key) in planLabels" :key="key">
@@ -50,7 +51,7 @@ import { NovelAPI, formatApiDetail, type Blueprint, type Chapter, type NovelProj
 import { globalAlert } from '@/composables/useAlert'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 import { useVolumeJobs } from '@/composables/useVolumeJobs'
-import { planningStage, volumeGroups } from '@/utils/volumes'
+import { jobError, planningStage, volumeGroups } from '@/utils/volumes'
 
 const props = defineProps<{ blueprint: Blueprint; projectId?: string; chapters?: Chapter[]; editable?: boolean }>()
 const emit = defineEmits<{ updated: [project: NovelProject] }>()

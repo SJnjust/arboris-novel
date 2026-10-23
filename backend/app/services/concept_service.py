@@ -47,7 +47,9 @@ def _ui_control(value):
     """把模型给出的控件规整为前端支持的 single_choice / text_input，缺失或未知类型退回文本输入。"""
     control = value if isinstance(value, dict) else {}
     options = []
-    for index, option in enumerate(control.get("options") or [], start=1):
+    raw_options = control.get("options")
+    raw_options = [raw_options] if isinstance(raw_options, str) else raw_options if isinstance(raw_options, list) else []
+    for index, option in enumerate(raw_options, start=1):
         if isinstance(option, dict):
             label = str(option.get("label") or option.get("text") or option.get("value") or "").strip()
             option_id = str(option.get("id") or index)

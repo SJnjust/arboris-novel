@@ -5,6 +5,7 @@ import math
 from fastapi import HTTPException
 from sqlalchemy import select, update
 
+from ..core.config import settings
 from ..models import ChapterOutline, NovelBlueprint, NovelVolume
 from ..schemas.novel import Blueprint, Volume
 from ..utils.json_utils import parse_llm_json
@@ -12,7 +13,7 @@ from .llm_service import LLMService
 from .novel_service import NovelService
 from .prompt_service import PromptService
 from .usage_service import UsageService
-from .volume_planning import blueprint_summary, integer, normalize_outline_batch, normalize_volume_plan, outline_context
+from .volume_planning import blueprint_summary, integer, normalize_outline_batch, normalize_volume_plan, outline_context, validate_core_lengths
 from .volume_service import VolumeService, cursor_for, serialize_volumes, written_numbers
 
 
@@ -26,7 +27,7 @@ class PlanningRun:
     def note_usage(self):
         self.usage += 1
 
-    async def call(self, name, content, timeout=300):
+    async def call(self, name, content):
         ctx = self.context
         ctx.check_cancelled()
         if self.config is None:
@@ -38,11 +39,15 @@ class PlanningRun:
         if not prompt:
             raise HTTPException(status_code=500, detail=f"缺少 {name} 提示词，请联系管理员配置")
         if name == "screenwriting":
-            prompt += "\n[R3 输出契约] 只输出核心设定与 target_chapter_range（整数 min/max），不要输出 chapter_outline 或 volumes。"
+            prompt += "\n[R3 输出契约] 只输出核心设定与 target_chapter_range（整数 min/max），不要输出 chapter_outline 或 volumes；标题≤80字，一句话梗概≤200字，full_synopsis≤2000字，核心角色≤12名、关系≤24条。"
+        if name == "volume_planning":
+            prompt += "\n[输出长度约束] 卷名≤60字、梗概≤240字、main_plot/core_conflict/climax/ending_hook/foreshadowing各≤160字；超过6卷时分别收紧为40/120/80字。用精练因果句，禁止扩写正文或逐章大纲。"
+        elif name == "volume_outline":
+            prompt += f"\n[本批输出契约] 仅生成本批任务闭区间，单批最多{settings.outline_batch_size}章；标题≤80字，summary≤300字，必须完整返回全部章号。"
         async with ctx.session_factory() as session:
             raw = await LLMService(session, config=self.config, record_usage=False, usage_callback=self.note_usage).get_llm_response(
                 system_prompt=prompt, conversation_history=[{"role": "user", "content": content}],
-                user_id=ctx.user_id, temperature=0.3, timeout=timeout,
+                user_id=ctx.user_id, temperature=0.3, timeout=settings.llm_job_deadline_seconds, structured=True,
             )
         try:
             result = parse_llm_json(raw, allow_lossy=False)
@@ -92,8 +97,9 @@ class PlanningRun:
             if not history:
                 raise HTTPException(status_code=400, detail="无法从历史对话中提取有效内容，请检查对话历史格式或重新进行概念对话")
         await ctx.advance("stage_core", 5)
-        raw = await self.call("screenwriting", "[已收集信息]\n" + json.dumps(state, ensure_ascii=False)[:6000] + "\n[最近对话]\n" + json.dumps(history[-12:], ensure_ascii=False), 480)
+        raw = await self.call("screenwriting", "[已收集信息]\n" + json.dumps(state, ensure_ascii=False)[:6000] + "\n[最近对话]\n" + json.dumps(history[-12:], ensure_ascii=False))
         try:
+            validate_core_lengths(raw)
             target = raw.get("target_chapter_range")
             if not isinstance(target, dict):
                 raise ValueError("缺少目标章数范围")
@@ -153,7 +159,7 @@ class PlanningRun:
             selected = [row for row in serialize_volumes(project) if numbers is None or row.volume_number in numbers]
             if numbers and len(selected) != len(numbers):
                 raise HTTPException(status_code=404, detail="卷不存在")
-            total_batches = sum(math.ceil((row.end_chapter - row.outline_cursor) / 15) for row in selected)
+            total_batches = sum(math.ceil((row.end_chapter - row.outline_cursor) / settings.outline_batch_size) for row in selected)
         done = 0
         for volume in selected:
             while True:
@@ -169,15 +175,15 @@ class PlanningRun:
                         await session.commit()
                         break
                     row.status = "outlining"
-                    start, end = cursor + 1, min(cursor + 15, row.end_chapter)
+                    start, end = cursor + 1, min(cursor + settings.outline_batch_size, row.end_chapter)
                     current = Volume(volume_number=row.volume_number, title=row.title, summary=row.summary or "", start_chapter=row.start_chapter,
                                      end_chapter=row.end_chapter, plan=row.plan or {})
                     recent = sorted((item for item in project.outlines if item.chapter_number < start), key=lambda item: item.chapter_number)[-10:]
                     previous = next((item.summary for item in project.volumes if item.volume_number == row.volume_number - 1), "")
                     content = outline_context(novel._build_blueprint_schema(project).model_dump(), current.model_dump(), previous, recent, start, end)
                     await session.commit()
-                batch = (start - current.start_chapter) // 15 + 1
-                batches = math.ceil((current.end_chapter - current.start_chapter + 1) / 15)
+                batch = (start - current.start_chapter) // settings.outline_batch_size + 1
+                batches = math.ceil((current.end_chapter - current.start_chapter + 1) / settings.outline_batch_size)
                 await ctx.advance(f"volume_{current.volume_number}_batch_{batch}_of_{batches}", base + int((94 - base) * done / max(1, total_batches)))
                 raw = await self.call("volume_outline", content)
                 try:

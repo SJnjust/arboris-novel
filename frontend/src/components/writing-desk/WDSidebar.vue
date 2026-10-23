@@ -78,6 +78,7 @@
             <div v-if="groups.length" class="space-y-3">
               <details v-for="group in groups" :key="group.volume_number" open class="space-y-3">
                 <summary class="font-semibold cursor-pointer text-sm">{{ group.volume_number ? `第 ${group.volume_number} 卷 · ` : '' }}{{ group.title }} · {{ group.written }} 已写 / {{ group.outlines.length }} 已有大纲 / {{ group.planned }} 计划章数</summary>
+                <p v-if="group.volume_number && !group.outlines.length" class="text-sm text-amber-800 rounded p-3 bg-amber-50" role="status">第 {{ group.volume_number }} 卷大纲尚未生成，可以生成或续跑。</p>
                 <button v-if="group.volume_number" class="md-btn md-btn-tonal text-sm" :disabled="isGeneratingOutline || group.status === 'outlined'" @click="$emit('generateVolumeOutline', group.volume_number)">{{ group.status === 'outlined' ? '本卷大纲完整' : '生成本卷大纲 / 续跑' }}</button>
               <div
                 v-for="(chapter, index) in group.outlines"

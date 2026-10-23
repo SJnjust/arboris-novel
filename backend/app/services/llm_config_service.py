@@ -75,7 +75,10 @@ class LLMConfigService:
             # HttpUrl 类型在 sqlite 中无法直接写入，需要提前转为字符串
             data["llm_provider_url"] = str(data["llm_provider_url"])
         if instance:
-            await self.repo.update_fields(instance, **data)
+            # 显式的空值表示清除个人覆盖，不走忽略 None 的通用仓库更新。
+            for name, value in data.items():
+                setattr(instance, name, value)
+            await self.session.flush()
         else:
             instance = LLMConfig(user_id=user_id, **data)
             await self.repo.add(instance)

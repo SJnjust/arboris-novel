@@ -118,6 +118,25 @@
           </button>
         </div>
       </div>
+      <fieldset class="border rounded-xl p-4 space-y-4">
+        <legend class="px-2 font-medium">推理与结构化生成</legend>
+        <label class="block text-sm">主模型推理强度
+          <select id="reasoning-effort" v-model="config.reasoning_effort" class="block w-full border rounded-md p-2 mt-1">
+            <option value="">留空（不发送推理强度参数）</option>
+            <option v-for="effort in efforts" :key="effort" :value="effort">{{ effort }}</option>
+          </select>
+        </label>
+        <label class="block text-sm">结构化生成模型（可选）
+          <input id="structured-model" v-model="config.structured_model" class="block w-full border rounded-md p-2 mt-1" placeholder="留空使用主模型" />
+        </label>
+        <label class="block text-sm">结构化生成推理强度（可选）
+          <select id="structured-effort" v-model="config.structured_reasoning_effort" class="block w-full border rounded-md p-2 mt-1">
+            <option value="">留空（使用主推理强度）</option>
+            <option v-for="effort in efforts" :key="effort" :value="effort">{{ effort }}</option>
+          </select>
+        </label>
+        <p class="text-sm text-gray-600">蓝图、分卷和大纲等结构化任务建议使用 low 或 medium；xhigh 可能长时间推理，容易超时。中转需支持 reasoning_effort，具体可选值取决于模型。保存个人配置后以个人字段为准；没有个人配置时使用全局设置。</p>
+      </fieldset>
       <div class="flex justify-end space-x-4 pt-4">
         <button type="button" @click="handleDelete" class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors">删除配置</button>
         <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors">保存</button>
@@ -135,8 +154,12 @@ const config = ref<LLMConfigCreate>({
   llm_provider_url: '',
   llm_provider_api_key: '',
   llm_provider_model: '',
+  reasoning_effort: '',
+  structured_model: '',
+  structured_reasoning_effort: '',
 });
 
+const efforts = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'];
 const showApiKey = ref(false);
 const availableModels = ref<string[]>([]);
 const isLoadingModels = ref(false);
@@ -160,6 +183,9 @@ onMounted(async () => {
       llm_provider_url: existingConfig.llm_provider_url || '',
       llm_provider_api_key: existingConfig.llm_provider_api_key || '',
       llm_provider_model: existingConfig.llm_provider_model || '',
+      reasoning_effort: existingConfig.reasoning_effort || '',
+      structured_model: existingConfig.structured_model || '',
+      structured_reasoning_effort: existingConfig.structured_reasoning_effort || '',
     };
   }
 });
@@ -179,6 +205,9 @@ const handleDelete = async () => {
       llm_provider_url: '',
       llm_provider_api_key: '',
       llm_provider_model: '',
+  reasoning_effort: '',
+  structured_model: '',
+  structured_reasoning_effort: '',
     };
     globalAlert.showSuccess('配置已删除！');
     } catch (error) { globalAlert.showError(error, '删除设置失败'); }

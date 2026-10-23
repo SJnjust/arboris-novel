@@ -60,7 +60,7 @@
         <div class="flex-1 min-w-0 min-h-0 flex flex-col">
           <div v-for="job in volumeJobs.jobs.value" :key="job.id" class="p-3 mb-3 rounded bg-gray-50" aria-live="polite">
             <p>{{ planningStage(job.stage) }} · {{ job.progress }}%</p>
-            <p v-if="job.status === 'failed'" class="text-red-600">{{ formatApiDetail(job.error?.detail) }} 已保存的批次可以续跑。</p>
+            <p v-if="job.status === 'failed'" class="text-red-600">{{ jobError(job) }} 已保存的批次可以续跑。</p>
             <button v-if="job.status === 'running' || job.status === 'queued'" class="underline" @click="cancelVolumeJob(job.id)">取消生成</button>
           </div>
           <JobProgress :jobs="operationJobs.jobs.value" :error="operationJobs.error.value" @cancel="cancelOperation" @retry="retryOperation" />
@@ -127,7 +127,7 @@ import { ApiError, NovelAPI } from '@/api/novel'
 import JobProgress from '@/components/JobProgress.vue'
 import { useJob } from '@/composables/useJob'
 import { useVolumeJobs } from '@/composables/useVolumeJobs'
-import { nextOutlineNumber, planningStage } from '@/utils/volumes'
+import { jobError, nextOutlineNumber, planningStage } from '@/utils/volumes'
 import { formatApiDetail } from '@/api/novel'
 import type { AIJob, Chapter, ChapterOutline, ChapterGenerationResponse, ChapterVersion } from '@/api/novel'
 import { globalAlert } from '@/composables/useAlert'
